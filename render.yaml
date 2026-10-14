@@ -9,8 +9,9 @@ services:
     plan: free
     region: singapore # next to the Supabase database
     rootDir: server # only changes under server/ trigger a deploy
-    dockerfilePath: ./server/Dockerfile
-    dockerContext: ./server
+    # Both paths are relative to rootDir, i.e. server/Dockerfile with server/ as the build context.
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /health
     autoDeployTrigger: checksPass # deploy only after the GitHub Actions tests pass
     envVars:
