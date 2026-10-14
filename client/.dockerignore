@@ -1,0 +1,9 @@
+# Keep secrets and local build output out of the Docker build.
+.env*
+!.env.example
+node_modules
+.next
+*.tsbuildinfo
+next-env.d.ts
+Dockerfile
+.dockerignore

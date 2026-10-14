@@ -1,0 +1,62 @@
+# Tests on every push and pull request. Render deploys the API only after
+# these checks pass (render.yaml: autoDeployTrigger: checksPass).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # A throwaway Postgres for the integration tests.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: API — install
+        working-directory: server
+        run: npm ci
+
+      - name: API — type-check and unit tests
+        working-directory: server
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: API — integration tests against Postgres
+        working-directory: server
+        run: |
+          DATABASE_URL="$TEST_DATABASE_URL" npx prisma migrate deploy
+          npm run test:integration
+
+      - name: Website — install and lint
+        working-directory: client
+        run: |
+          npm ci
+          npm run lint

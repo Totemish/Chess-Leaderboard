@@ -1,0 +1,50 @@
+# Runs on the EC2 server in /opt/iitr-chess. GitHub Actions copies this file and
+# the Caddyfile there on every deploy; the .env, api.env and web.env files are
+# created once by hand on the server and never committed (see deploy/ec2/README.md).
+
+services:
+  # Public entry point: HTTPS certificates (Let's Encrypt) and routing by domain.
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      WEB_DOMAIN: ${WEB_DOMAIN:?set WEB_DOMAIN in /opt/iitr-chess/.env}
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in /opt/iitr-chess/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # certificates: keep them across restarts
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+
+  # Next.js website.
+  web:
+    image: ghcr.io/${IMAGE_OWNER:?set IMAGE_OWNER in /opt/iitr-chess/.env}/iitr-chess-web:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: web.env
+    environment:
+      # The website's server talks to the API over Docker's private network.
+      API_INTERNAL_URL: http://api:5000
+
+  # Express API, Socket.IO and the Chess.com sync job. Applies migrations on start.
+  api:
+    image: ghcr.io/${IMAGE_OWNER}/iitr-chess-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: api.env
+    environment:
+      PORT: "5000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5000/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  caddy_data:
+  caddy_config:

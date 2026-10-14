@@ -1,0 +1,9 @@
+# Keep secrets, tests and local build output out of the Docker build.
+.env
+.env.*
+!.env.example
+node_modules
+dist
+tests
+Dockerfile
+.dockerignore

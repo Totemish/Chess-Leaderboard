@@ -1,0 +1,14 @@
+# Caddy gets and renews HTTPS certificates for both domains automatically.
+# Both domains' DNS A records must point at this server, and ports 80 and 443
+# must be open, before the first start.
+
+{$WEB_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:3000
+}
+
+# Also carries the Socket.IO live updates (WebSocket upgrades pass through).
+{$API_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy api:5000
+}

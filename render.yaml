@@ -1,0 +1,23 @@
+# Render Blueprint for the API (Express + Socket.IO + the Chess.com sync job).
+# Render builds server/Dockerfile; the container applies database migrations on start.
+# Setup steps: deploy/README.md.
+
+services:
+  - type: web
+    name: iitr-chess-api
+    runtime: docker
+    plan: free
+    region: singapore # next to the Supabase database
+    rootDir: server # only changes under server/ trigger a deploy
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass # deploy only after the GitHub Actions tests pass
+    envVars:
+      # Render asks for these when you create the Blueprint; they are never stored in the repo.
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false

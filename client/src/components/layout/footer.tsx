@@ -10,7 +10,7 @@ export default function Footer() {
           </a>{' '}
           and sync every 10 minutes.
         </p>
-        <a href="https://github.com/Totemish/IITR-Chess-Leaderboard" className={link} target="_blank" rel="noreferrer">
+        <a href="https://github.com/Totemish/Chess-Leaderboard" className={link} target="_blank" rel="noreferrer">
           Source on GitHub
         </a>
       </div>

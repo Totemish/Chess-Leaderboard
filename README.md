@@ -84,15 +84,19 @@ Admins can also add or remove players directly (see [Managing players](#managing
 | API | Node.js, Express 5, TypeScript, Socket.IO, node-cron, Prisma 6, jsonwebtoken |
 | Data | PostgreSQL, Redis (optional cache) |
 | Tests | Node's built-in test runner (`node:test`) |
+| Deployment | Vercel, Render (Docker), GitHub Actions CI; optional AWS EC2 with Docker Compose and Caddy |
 
 ## Project structure
 
 ```
-client/                      Next.js web app
+.github/workflows/           ci.yml: tests on every push; deploy-ec2.yml: optional manual EC2 deploy
+render.yaml                  Render Blueprint for the API
+deploy/                      deployment guide (Vercel + Render); ec2/ holds the optional EC2 setup
+client/                      Next.js web app (Dockerfile builds a standalone server)
   src/app/                   routes: leaderboard, tournaments, dashboard, sign-in, API proxy
   src/components/            leaderboard, tournaments (pairings, crosstable), dashboard, charts, ui
   src/lib/                   API client, auth config, chess and tournament helpers
-server/                      Express API
+server/                      Express API (Dockerfile; migrations run on container start)
   index.ts                   composition root: wires dependencies, CORS, shutdown
   config.ts                  environment, validated at startup
   domain/                    pure, unit-tested logic
@@ -202,10 +206,19 @@ Socket.IO event `player_updated` carries a player's updated profile.
 
 ## Deployment
 
-- **Web app:** Vercel. Set the variables from `client/.env.example`. `NEXT_PUBLIC_API_URL` is baked in at build time.
-- **API:** an always-on Node host (Render, Railway, Fly.io or a VPS). The Socket.IO server and the sync job need a long-running process, so serverless functions won't work, and free tiers that sleep will pause the sync. Build with `npm run build`, start with `npm start`, and run `npx prisma migrate deploy` on each release. Set `CLIENT_ORIGIN` to the web app's URL.
-- **Database:** Neon or Supabase Postgres (add `?pgbouncer=true` when using a pooled connection string). **Cache:** Upstash Redis (optional).
-- **OAuth:** register `<web app URL>/api/auth/callback/<provider>` as the redirect URI for each provider.
+The site runs for free on three hosts:
+
+- **Vercel** serves the website.
+- **Render** runs the API from `server/Dockerfile`, configured by `render.yaml`, in Singapore next to the database.
+- **Supabase** hosts Postgres.
+
+On every push, **GitHub Actions** runs the type-check, the unit tests and the integration tests against a real Postgres. Render deploys the API only after those checks pass, and the API container applies database migrations on startup.
+
+Step-by-step setup: **[deploy/README.md](deploy/README.md)**.
+
+The API needs an always-on process, because the Socket.IO server and the sync job can't run as serverless functions; that's why it lives on Render rather than Vercel.
+
+There is also an optional self-hosted setup on **AWS EC2**: Docker Compose runs both apps behind Caddy for HTTPS, and a manual GitHub Actions workflow builds the images and deploys over SSH. See [deploy/ec2/README.md](deploy/ec2/README.md).
 
 ## License
 

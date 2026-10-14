@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import jwt from 'jsonwebtoken';
 
-const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+// Server-to-server calls can use a private address (e.g. http://api:5000 inside
+// Docker) instead of going out to the public API URL and back.
+const backendUrl = process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 const authSecret = process.env.AUTH_SECRET;
 
 /**

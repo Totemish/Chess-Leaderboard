@@ -23,6 +23,6 @@ export const config = {
     .filter(Boolean),
   instituteEmailDomain: (process.env.INSTITUTE_EMAIL_DOMAIN ?? '@iitr.ac.in').toLowerCase(),
   /** Chess.com asks API clients for a recognisable User-Agent with contact details. */
-  chessComUserAgent: `IITR-Chess-Leaderboard/1.0 (+https://github.com/Totemish/IITR-Chess-Leaderboard${contact ? `; ${contact}` : ''})`,
+  chessComUserAgent: `IITR-Chess-Leaderboard/1.0 (+https://github.com/Totemish/Chess-Leaderboard${contact ? `; ${contact}` : ''})`,
   syncSchedule: process.env.SYNC_CRON ?? '*/10 * * * *',
 };

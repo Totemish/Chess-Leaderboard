@@ -3,6 +3,7 @@
 # Secrets: never commit real environment files.
 .env
 .env.*
+*.env
 !.env.example
 
 # Dependencies and build output
