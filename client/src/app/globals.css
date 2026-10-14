@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+/*
+  Colour system: the two squares of a chessboard.
+  Light mode is the light square with dark-square ink; dark mode swaps them.
+
+  --square / --square-alt are the board's two squares. The leaderboard's rank
+  column alternates them like the edge file of a board.
+  --marker is the "last move" highlight from a board. It is reserved for what is
+  selected or has just changed, so it keeps its meaning.
+  --plot is the chart line: the board green pushed to chart-safe chroma
+  (validated against --surface in both modes).
+  Every text/background pairing here clears WCAG AA (4.5:1).
+*/
+:root {
+  color-scheme: light dark;
+
+  --paper: #edf2ee;
+  --surface: #f8faf8;
+  --ink: #0f2b2a;
+  --ink-soft: #3d5955;
+  --ink-faint: #536c68;
+  --line: #cbd8d2;
+  --line-strong: #6e8b82;
+  --square: #3f7c69;
+  --on-square: #ffffff;
+  --square-alt: #d5e2db;
+  --plot: #16805c;
+  --marker: #dce86b;
+  --on-marker: #0f2b2a;
+  --gain: #17734a;
+  --loss: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0c1f1f;
+    --surface: #122827;
+    --ink: #e8f1ec;
+    --ink-soft: #b3c8c1;
+    --ink-faint: #8aa49d;
+    --line: #254240;
+    --line-strong: #54766f;
+    --square: #72b39d;
+    --on-square: #0c1f1f;
+    --square-alt: #1f3d3a;
+    --plot: #38a97f;
+    --marker: #d3e563;
+    --on-marker: #0c1f1f;
+    --gain: #67d49b;
+    --loss: #ffa59c;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-square: var(--square);
+  --color-on-square: var(--on-square);
+  --color-square-alt: var(--square-alt);
+  --color-plot: var(--plot);
+  --color-marker: var(--marker);
+  --color-on-marker: var(--on-marker);
+  --color-gain: var(--gain);
+  --color-loss: var(--loss);
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  body {
+    background-color: var(--paper);
+    color: var(--ink);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--marker);
+    color: var(--on-marker);
+  }
+
+  /* Native search inputs draw their own clear button; we provide one. */
+  input[type="search"]::-webkit-search-cancel-button {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

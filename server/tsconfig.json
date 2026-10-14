@@ -1,0 +1,20 @@
+{
+  // Type-checks everything (app, tests, seed). The production build uses tsconfig.build.json.
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "es2020",
+    "types": ["node"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true
+  },
+  "exclude": ["node_modules", "dist"]
+}

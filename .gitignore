@@ -1,0 +1,18 @@
+# Safety net for the whole repo (client/ and server/ have their own .gitignore too).
+
+# Secrets: never commit real environment files.
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+.next/
+dist/
+*.tsbuildinfo
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

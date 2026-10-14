@@ -1,0 +1,128 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String        @id @default(uuid())
+  authId         String        @unique
+  name           String?
+  email          String?
+  image          String?
+  provider       String?       // "google", "github", "discord"
+  providerAccountId String?    // OAuth account ID
+  chessProfileId String?       @unique
+  chessProfile   ChessProfile? @relation(fields: [chessProfileId], references: [id])
+  role           Role          @default(USER)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([provider, providerAccountId])
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model ChessProfile {
+  id             String          @id // Using lowercased username as primary key
+  username       String          @unique
+  displayName    String?
+  avatarUrl      String?
+  country        String?
+  title          String?
+  rapidRating    Int?
+  blitzRating    Int?
+  bulletRating   Int?
+  lastUpdated    DateTime        @default(now())
+  user           User?
+  ratingHistories RatingHistory[]
+  tournaments    TournamentParticipant[]
+  matchesAsPlayer1 Match[] @relation("Player1")
+  matchesAsPlayer2 Match[] @relation("Player2")
+  matchesWon       Match[] @relation("Winner")
+
+  @@index([rapidRating(sort: Desc)])
+  @@index([blitzRating(sort: Desc)])
+  @@index([bulletRating(sort: Desc)])
+}
+
+model RatingHistory {
+  id             String       @id @default(uuid())
+  profileId      String
+  profile        ChessProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  format         String       // "rapid", "blitz", or "bullet"
+  rating         Int
+  date           DateTime     @default(now())
+
+  @@unique([profileId, format, date])
+  @@index([profileId, format])
+}
+
+model Tournament {
+  id           String                  @id @default(uuid())
+  name         String
+  status       TournamentStatus        @default(PENDING) // PENDING, ONGOING, COMPLETED
+  format       String                  @default("rapid") // Time control used for seeding: "rapid", "blitz" or "bullet"
+  // Last round paired (0 before round 1). Every tournament write locks this row
+  // first, so two admins pressing "Pair" at once can't create the same round twice.
+  currentRound Int                     @default(0)
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+  participants TournamentParticipant[]
+  matches      Match[]
+}
+
+enum TournamentStatus {
+  PENDING
+  ONGOING
+  COMPLETED
+}
+
+model TournamentParticipant {
+  id           String       @id @default(uuid())
+  tournamentId String
+  tournament   Tournament   @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  profileId    String
+  profile      ChessProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  // score and buchholz are derived from the games and recomputed after every change.
+  score        Float        @default(0) // Points: 1 for win or bye, 0.5 for draw, 0 for loss
+  buchholz     Float        @default(0) // Tie-break: sum of opponents' scores
+  seedRating   Int          @default(0) // The player's rating when joining
+  createdAt    DateTime     @default(now())
+
+  @@unique([tournamentId, profileId])
+}
+
+model Match {
+  id           String       @id @default(uuid())
+  tournamentId String
+  tournament   Tournament   @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  round        Int
+  // player1 plays White and player2 Black. A bye has player1 only.
+  player1Id    String?      // Nullable for "bye" matches
+  player1      ChessProfile? @relation("Player1", fields: [player1Id], references: [id], onDelete: SetNull)
+  player2Id    String?      // Nullable for "bye" matches
+  player2      ChessProfile? @relation("Player2", fields: [player2Id], references: [id], onDelete: SetNull)
+  winnerId     String?      // Null if draw or not finished
+  winner       ChessProfile? @relation("Winner", fields: [winnerId], references: [id], onDelete: SetNull)
+  isDraw       Boolean      @default(false)
+  status       MatchStatus  @default(PENDING)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([tournamentId, round])
+}
+
+enum MatchStatus {
+  PENDING
+  COMPLETED
+}

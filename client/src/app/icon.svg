@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .dark { fill: #0f2b2a; }
+    .light { fill: #edf2ee; }
+    @media (prefers-color-scheme: dark) {
+      .dark { fill: #e8f1ec; }
+      .light { fill: #0c1f1f; }
+    }
+  </style>
+  <rect class="dark" x="1" y="1" width="30" height="30" rx="6" />
+  <rect class="light" x="3" y="3" width="26" height="26" rx="4" />
+  <rect class="dark" x="3" y="3" width="13" height="13" />
+  <rect class="dark" x="16" y="16" width="13" height="13" />
+</svg>
