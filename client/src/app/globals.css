@@ -3,6 +3,8 @@
 /*
   Colour system: the two squares of a chessboard.
   Light mode is the light square with dark-square ink; dark mode swaps them.
+  The dark squares come first so `.on-dark` can share them: it keeps an element
+  on the dark squares in both modes (the footer does this).
 
   --square / --square-alt are the board's two squares. The leaderboard's rank
   column alternates them like the edge file of a board.
@@ -12,43 +14,46 @@
   (validated against --surface in both modes).
   Every text/background pairing here clears WCAG AA (4.5:1).
 */
-:root {
-  color-scheme: light dark;
+:root,
+.on-dark {
+  color-scheme: dark;
 
-  --paper: #edf2ee;
-  --surface: #f8faf8;
-  --ink: #0f2b2a;
-  --ink-soft: #3d5955;
-  --ink-faint: #536c68;
-  --line: #cbd8d2;
-  --line-strong: #6e8b82;
-  --square: #3f7c69;
-  --on-square: #ffffff;
-  --square-alt: #d5e2db;
-  --plot: #16805c;
-  --marker: #dce86b;
-  --on-marker: #0f2b2a;
-  --gain: #17734a;
-  --loss: #b3261e;
+  --paper: #0c1f1f;
+  --surface: #122827;
+  --ink: #e8f1ec;
+  --ink-soft: #b3c8c1;
+  --ink-faint: #8aa49d;
+  --line: #254240;
+  --line-strong: #54766f;
+  --square: #72b39d;
+  --on-square: #0c1f1f;
+  --square-alt: #1f3d3a;
+  --plot: #38a97f;
+  --marker: #d3e563;
+  --on-marker: #0c1f1f;
+  --gain: #67d49b;
+  --loss: #ffa59c;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --paper: #0c1f1f;
-    --surface: #122827;
-    --ink: #e8f1ec;
-    --ink-soft: #b3c8c1;
-    --ink-faint: #8aa49d;
-    --line: #254240;
-    --line-strong: #54766f;
-    --square: #72b39d;
-    --on-square: #0c1f1f;
-    --square-alt: #1f3d3a;
-    --plot: #38a97f;
-    --marker: #d3e563;
-    --on-marker: #0c1f1f;
-    --gain: #67d49b;
-    --loss: #ffa59c;
+    color-scheme: light;
+
+    --paper: #edf2ee;
+    --surface: #f8faf8;
+    --ink: #0f2b2a;
+    --ink-soft: #3d5955;
+    --ink-faint: #536c68;
+    --line: #cbd8d2;
+    --line-strong: #6e8b82;
+    --square: #3f7c69;
+    --on-square: #ffffff;
+    --square-alt: #d5e2db;
+    --plot: #16805c;
+    --marker: #dce86b;
+    --on-marker: #0f2b2a;
+    --gain: #17734a;
+    --loss: #b3261e;
   }
 }
 
@@ -69,6 +74,25 @@
   --color-gain: var(--gain);
   --color-loss: var(--loss);
   --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* The footer's heart beats once ("lub-dub") when its signature is hovered. */
+@theme {
+  --animate-heartbeat: heartbeat 0.9s ease-in-out;
+
+  @keyframes heartbeat {
+    0%,
+    40%,
+    100% {
+      transform: scale(1);
+    }
+    20% {
+      transform: scale(1.2);
+    }
+    60% {
+      transform: scale(1.12);
+    }
+  }
 }
 
 @layer base {
