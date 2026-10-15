@@ -8,7 +8,7 @@ import { signIn } from 'next-auth/react';
 import { formatDistanceStrict } from 'date-fns';
 import { Search, X } from 'lucide-react';
 import { API_URL, describeError, fetchJson } from '@/lib/api';
-import { competitionRanks, formatLabel, getRating, ordinal } from '@/lib/chess';
+import { competitionRanks, formatLabel, getRating, isListed, ordinal } from '@/lib/chess';
 import { cn } from '@/lib/utils';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useLiveUpdates, type LiveStatus } from '@/hooks/use-live-updates';
@@ -90,7 +90,7 @@ export default function LeaderboardClient({ format }: { format: RatingFormat }) 
     }
 
     return [...byId.values()]
-      .filter((p) => getRating(p, format) !== null)
+      .filter((p) => getRating(p, format) !== null && isListed(p))
       .sort((a, b) => (getRating(b, format) ?? 0) - (getRating(a, format) ?? 0) || a.id.localeCompare(b.id));
   }, [pages, live, hasMore, format]);
 
@@ -111,6 +111,12 @@ export default function LeaderboardClient({ format }: { format: RatingFormat }) 
     setMoves((prev) =>
       new Map(prev).set(update.id, { delta: (prev.get(update.id)?.delta ?? 0) + newRating - oldRating, at })
     );
+  }, () => {
+    // Someone joined or left the board, or was renamed: refetch rather than patch,
+    // and drop live rows that could otherwise bring back a stale player.
+    setLive(new Map());
+    void board.mutate();
+    if (searching) void results.mutate();
   });
 
   const rows = searching
@@ -119,7 +125,7 @@ export default function LeaderboardClient({ format }: { format: RatingFormat }) 
           const update = live.get(p.id);
           return update && isNewer(update, p) ? { ...p, ...update } : p;
         })
-        .filter((p) => getRating(p, format) !== null)
+        .filter((p) => getRating(p, format) !== null && isListed(p))
     : ranked;
 
   const lastSync = ranked.reduce((max, p) => Math.max(max, Date.parse(p.lastUpdated)), 0);
@@ -219,6 +225,7 @@ export default function LeaderboardClient({ format }: { format: RatingFormat }) 
         <StandingNote
           signedIn={signedIn}
           linked={!!myId}
+          listed={me?.chessProfile ? isListed(me.chessProfile) : true}
           checkedLink={!!me}
           rank={myId ? (rankById.get(myId) ?? null) : null}
           rating={me?.chessProfile ? getRating(me.chessProfile, format) : null}
@@ -296,6 +303,7 @@ function SearchField({ value, onChange }: { value: string; onChange: (value: str
 function StandingNote({
   signedIn,
   linked,
+  listed,
   checkedLink,
   rank,
   rating,
@@ -304,6 +312,8 @@ function StandingNote({
 }: {
   signedIn: boolean;
   linked: boolean;
+  /** False when the linked account was closed, went missing or was removed. */
+  listed: boolean;
   checkedLink: boolean;
   rank: number | null;
   rating: number | null;
@@ -331,6 +341,16 @@ function StandingNote({
           Link your Chess.com account
         </Link>{' '}
         to join.
+      </>
+    );
+  } else if (linked && !listed) {
+    message = (
+      <>
+        Your linked Chess.com account isn&apos;t on the leaderboard any more.{' '}
+        <Link href="/dashboard" className={link}>
+          See why on your dashboard
+        </Link>
+        .
       </>
     );
   } else if (linked && rank !== null) {

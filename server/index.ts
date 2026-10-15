@@ -8,6 +8,7 @@ import { redis } from './services/redis.service';
 import { ChessComClient } from './services/chess.service';
 import { startSyncJob } from './services/cron.service';
 import { TournamentService } from './services/tournament.service';
+import { MemberService } from './services/member.service';
 import { SwissPairing } from './domain/pairing/swiss';
 import { createAuthRouter } from './routes/auth.routes';
 import { createPlayerRouter } from './routes/player.routes';
@@ -16,6 +17,7 @@ import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
 // Composition root: build every dependency once and hand it to the routers.
 const chess = new ChessComClient(config.chessComUserAgent);
+const members = new MemberService(prisma, config.instituteEmailDomain);
 const tournaments = new TournamentService(prisma, new SwissPairing());
 
 const app = express();
@@ -41,13 +43,13 @@ app.use(
   '/api/auth',
   createAuthRouter({
     db: prisma,
+    members,
     chess,
     io,
     authSecret: config.authSecret,
-    instituteDomain: config.instituteEmailDomain,
   })
 );
-app.use('/api/tournaments', createTournamentRouter({ db: prisma, tournaments }));
+app.use('/api/tournaments', createTournamentRouter({ members, tournaments }));
 app.use('/api', createPlayerRouter({ db: prisma }));
 app.use(notFoundHandler);
 app.use(errorHandler);

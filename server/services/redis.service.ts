@@ -44,7 +44,8 @@ export async function getLeaderboard(format: TimeControl, cursor?: string, searc
     bullet: { bulletRating: { not: null } },
   };
 
-  const where: Prisma.ChessProfileWhereInput = { ...baseWhereMap[format] };
+  // Closed, missing and removed players keep their rows but aren't ranked.
+  const where: Prisma.ChessProfileWhereInput = { ...baseWhereMap[format], status: 'ACTIVE' };
   if (search) {
     where.OR = [
       { username: { contains: search, mode: 'insensitive' } },

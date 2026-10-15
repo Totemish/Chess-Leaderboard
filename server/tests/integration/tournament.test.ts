@@ -32,17 +32,19 @@ const PLAYERS = [
   { id: 'it-delta', rapid: 1700, blitz: 1700 },
   { id: 'it-echo', rapid: 1600, blitz: null },
 ];
-const authId = (profileId: string) => `test:${profileId}`;
+/** Each player's member id, filled in before the tests run. */
+const memberIds = new Map<string, string>();
+const memberOf = (profileId: string) => memberIds.get(profileId)!;
 
 async function cleanup() {
   await db.tournament.deleteMany({ where: { name: { startsWith: 'it-' } } });
-  await db.user.deleteMany({ where: { authId: { startsWith: 'test:it-' } } });
+  await db.user.deleteMany({ where: { identities: { some: { authId: { startsWith: 'test:it-' } } } } });
   await db.chessProfile.deleteMany({ where: { id: { startsWith: 'it-' } } });
 }
 
 async function newTournament(name: string, format: 'rapid' | 'blitz' = 'rapid', players = PLAYERS) {
   const t = await service.create(`it-${name}`, format);
-  for (const p of players) await service.join(t.id, authId(p.id));
+  for (const p of players) await service.join(t.id, memberOf(p.id));
   return t;
 }
 
@@ -57,7 +59,10 @@ before(async () => {
   await cleanup();
   for (const p of PLAYERS) {
     await db.chessProfile.create({ data: { id: p.id, username: p.id, displayName: p.id, rapidRating: p.rapid, blitzRating: p.blitz } });
-    await db.user.create({ data: { authId: authId(p.id), chessProfileId: p.id } });
+    const member = await db.user.create({
+      data: { chessProfileId: p.id, identities: { create: { authId: `test:${p.id}`, provider: 'test' } } },
+    });
+    memberIds.set(p.id, member.id);
   }
 });
 
@@ -75,12 +80,12 @@ test('full lifecycle: register, pair, record, finish', { skip }, async () => {
   assert.equal(seeds['it-bravo'], 2000);
   assert.equal(seeds['it-echo'], 0);
 
-  await assert.rejects(service.join(t.id, authId('it-alpha')), ConflictError);
-  await assert.rejects(service.join(t.id, 'test:it-nobody'), BadRequestError);
+  await assert.rejects(service.join(t.id, memberOf('it-alpha')), ConflictError);
+  await assert.rejects(service.join(t.id, 'no-such-member'), BadRequestError);
 
   const r1 = await service.pairNextRound(t.id);
   assert.deepEqual(r1, { round: 1, boards: 3 }); // 5 players: two games and a bye
-  await assert.rejects(service.join(t.id, authId('it-alpha')), ConflictError); // registration closed
+  await assert.rejects(service.join(t.id, memberOf('it-alpha')), ConflictError); // registration closed
   await assert.rejects(service.pairNextRound(t.id), ConflictError); // round 1 unfinished
 
   const bye = await db.match.findFirstOrThrow({ where: { tournamentId: t.id, player2Id: null } });
@@ -153,6 +158,17 @@ test('deleting a tournament removes its registrations and games, but not the pla
   assert.equal(await db.match.count({ where: { tournamentId: t.id } }), 0);
   assert.equal(await db.chessProfile.count({ where: { id: { in: PLAYERS.map((p) => p.id) } } }), PLAYERS.length);
   await assert.rejects(service.remove(t.id), NotFoundError);
+});
+
+test("a player who has left the leaderboard can't join a tournament", { skip }, async () => {
+  const t = await service.create('it-closed-account', 'rapid');
+  await db.chessProfile.update({ where: { id: 'it-echo' }, data: { status: 'CLOSED' } });
+  try {
+    await assert.rejects(service.join(t.id, memberOf('it-echo')), BadRequestError);
+    await service.join(t.id, memberOf('it-delta'));
+  } finally {
+    await db.chessProfile.update({ where: { id: 'it-echo' }, data: { status: 'ACTIVE' } });
+  }
 });
 
 test('results for different games entered at once are both kept in the standings', { skip }, async () => {

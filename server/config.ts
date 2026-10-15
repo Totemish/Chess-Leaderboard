@@ -21,7 +21,8 @@ export const config = {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
-  instituteEmailDomain: (process.env.INSTITUTE_EMAIL_DOMAIN ?? '@iitr.ac.in').toLowerCase(),
+  /** Addresses at this domain or any subdomain (name@ece.iitr.ac.in) may join. Bare: "iitr.ac.in". */
+  instituteEmailDomain: (process.env.INSTITUTE_EMAIL_DOMAIN ?? 'iitr.ac.in').trim().toLowerCase().replace(/^@/, ''),
   /** Chess.com asks API clients for a recognisable User-Agent with contact details. */
   chessComUserAgent: `IITR-Chess-Leaderboard/1.0 (+https://github.com/Totemish/Chess-Leaderboard${contact ? `; ${contact}` : ''})`,
   syncSchedule: process.env.SYNC_CRON ?? '*/10 * * * *',

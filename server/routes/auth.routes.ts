@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import type { Server } from 'socket.io';
-import { authMiddleware, type AuthUser } from '../middleware/auth.middleware';
+import { authMiddleware } from '../middleware/auth.middleware';
 import { ConflictError, ForbiddenError, NotFoundError, TooManyRequestsError, BadRequestError } from '../lib/errors';
 import { parseChessUsername } from '../lib/validate';
-import { syncPlayer, type ChessComClient } from '../services/chess.service';
+import { syncPlayer, type ChessComClient, type ChessComProfile } from '../services/chess.service';
+import { broadcastSync } from '../services/cron.service';
 import { invalidateLeaderboardCache } from '../services/redis.service';
+import type { MemberService } from '../services/member.service';
 import { profileShowsCode, verificationCode } from '../domain/ownership';
 
 const DAY_MS = 86_400_000;
@@ -13,58 +15,38 @@ const SELF_SYNC_COOLDOWN_MS = 60_000;
 
 interface AuthRouteDeps {
   db: PrismaClient;
+  members: MemberService;
   chess: ChessComClient;
   io: Server;
   authSecret: string;
-  instituteDomain: string;
 }
 
-export function createAuthRouter({ db, chess, io, authSecret, instituteDomain }: AuthRouteDeps) {
+/** A closed account can't join, and couldn't show a code anyway. */
+function assertOpen(remote: ChessComProfile) {
+  if (remote.status?.startsWith('closed')) {
+    throw new BadRequestError(`Chess.com has closed ${remote.username}'s account, so it can't join the leaderboard.`);
+  }
+}
+
+export function createAuthRouter({ db, members, chess, io, authSecret }: AuthRouteDeps) {
   const router = Router();
   const lastSelfSync = new Map<string, number>();
 
-  /** Creates the member's row on first sight. An upsert, so parallel first requests can't collide. */
-  const ensureMember = (user: AuthUser) => {
-    const split = user.id.indexOf(':');
-    return db.user.upsert({
-      where: { authId: user.id },
-      update: {},
-      create: {
-        authId: user.id,
-        email: user.email ?? null,
-        name: user.name ?? null,
-        image: user.image ?? null,
-        provider: split > 0 ? user.id.slice(0, split) : null,
-        providerAccountId: split > 0 ? user.id.slice(split + 1) : null,
-      },
-    });
-  };
-
-  const assertInstituteMember = (user: AuthUser) => {
-    if (!user.email?.endsWith(instituteDomain)) {
-      throw new ForbiddenError(`Only ${instituteDomain} accounts can join the leaderboard.`);
-    }
-    if (!user.emailVerified) {
-      throw new ForbiddenError(
-        `Your sign-in provider hasn't confirmed ${user.email}. Sign out, then sign in again with the Google account for your ${instituteDomain} email.`
-      );
-    }
-  };
-
-  const assertNotLinkedElsewhere = async (profileId: string, authId: string) => {
-    const holder = await db.user.findUnique({ where: { chessProfileId: profileId }, select: { authId: true } });
-    if (holder && holder.authId !== authId) {
+  const assertNotLinkedElsewhere = async (profileId: string, memberId: string) => {
+    const holder = await db.user.findUnique({ where: { chessProfileId: profileId }, select: { id: true } });
+    if (holder && holder.id !== memberId) {
       throw new ConflictError('This Chess.com account is already linked to another member.');
     }
   };
 
-  // The signed-in member, with the last 90 days of rating history.
+  // The signed-in member: their sign-in methods and the last 90 days of rating history.
   router.get('/me', authMiddleware, async (req, res) => {
-    const member = await ensureMember(req.user!);
+    const member = await members.resolve(req.user!);
     const since = new Date(Date.now() - 90 * DAY_MS);
     const data = await db.user.findUnique({
       where: { id: member.id },
       include: {
+        identities: { select: { provider: true, email: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
         chessProfile: {
           include: { ratingHistories: { where: { date: { gte: since } }, orderBy: { date: 'asc' } } },
         },
@@ -75,47 +57,49 @@ export function createAuthRouter({ db, chess, io, authSecret, instituteDomain }:
 
   // Step 1 of linking: check the account exists and hand out the ownership code.
   router.post('/link-profile/challenge', authMiddleware, async (req, res) => {
-    const user = req.user!;
-    assertInstituteMember(user);
+    const member = await members.resolve(req.user!);
+    members.assertInstituteMember(member, req.user!);
     const username = parseChessUsername(req.body?.chessUsername);
     const remote = await chess.getProfile(username);
     if (!remote) throw new NotFoundError(`Chess.com has no player called "${username}".`);
-    await assertNotLinkedElsewhere(username.toLowerCase(), user.id);
+    assertOpen(remote);
+    await assertNotLinkedElsewhere(username.toLowerCase(), member.id);
     res.json({
       success: true,
-      data: { username: remote.username, code: verificationCode(authSecret, user.id, username) },
+      data: { username: remote.username, code: verificationCode(authSecret, member.id, username) },
     });
   });
 
   // Step 2: confirm the code is on the Chess.com profile, then link it (adding the player if new).
   router.post('/link-profile', authMiddleware, async (req, res) => {
-    const user = req.user!;
-    assertInstituteMember(user);
+    const member = await members.resolve(req.user!);
+    members.assertInstituteMember(member, req.user!);
     const username = parseChessUsername(req.body?.chessUsername);
-    const profileId = username.toLowerCase();
-    await assertNotLinkedElsewhere(profileId, user.id);
+    await assertNotLinkedElsewhere(username.toLowerCase(), member.id);
 
     const remote = await chess.getProfile(username);
     if (!remote) throw new NotFoundError(`Chess.com has no player called "${username}".`);
-    const code = verificationCode(authSecret, user.id, username);
+    assertOpen(remote);
+    const code = verificationCode(authSecret, member.id, username);
     if (!profileShowsCode(remote, code)) {
       throw new BadRequestError(
         `${code} isn't on ${remote.username}'s Chess.com profile yet. Add it to the Location field, save, and try again.`
       );
     }
 
-    const synced = await syncPlayer(chess, username);
+    // Proving ownership also brings back a player an admin had removed.
+    const synced = await syncPlayer(chess, username, { restore: true });
     if (!synced) throw new NotFoundError(`Chess.com has no player called "${username}".`);
-    await ensureMember(user);
     try {
-      const member = await db.user.update({
-        where: { authId: user.id },
-        data: { chessProfileId: profileId },
+      const linked = await db.user.update({
+        where: { id: member.id },
+        data: { chessProfileId: synced.profile.id },
         include: { chessProfile: true },
       });
+      // The leaderboard shows members' names, so it changes even when the ratings didn't.
       await invalidateLeaderboardCache();
-      io.emit('player_updated', synced.profile);
-      res.json({ success: true, data: member });
+      broadcastSync(io, synced);
+      res.json({ success: true, data: linked });
     } catch (error) {
       // The unique index on chessProfileId is the final word if two members race.
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
@@ -126,9 +110,10 @@ export function createAuthRouter({ db, chess, io, authSecret, instituteDomain }:
   });
 
   router.delete('/unlink-profile', authMiddleware, async (req, res) => {
-    await ensureMember(req.user!);
-    const member = await db.user.update({ where: { authId: req.user!.id }, data: { chessProfileId: null } });
-    res.json({ success: true, data: member });
+    const member = await members.resolve(req.user!);
+    const data = await db.user.update({ where: { id: member.id }, data: { chessProfileId: null } });
+    await invalidateLeaderboardCache();
+    res.json({ success: true, data });
   });
 
   // Pull fresh ratings now. Admins can sync anyone (that is how they add
@@ -136,7 +121,7 @@ export function createAuthRouter({ db, chess, io, authSecret, instituteDomain }:
   router.post('/sync/:username', authMiddleware, async (req, res) => {
     const username = parseChessUsername(req.params.username);
     const profileId = username.toLowerCase();
-    const member = await db.user.findUnique({ where: { authId: req.user!.id } });
+    const member = await members.find(req.user!.id);
     const isAdmin = member?.role === 'ADMIN';
 
     if (!isAdmin) {
@@ -150,10 +135,11 @@ export function createAuthRouter({ db, chess, io, authSecret, instituteDomain }:
       lastSelfSync.set(profileId, Date.now());
     }
 
-    const result = await syncPlayer(chess, username);
+    // An admin adding a player also brings back one they removed earlier.
+    const result = await syncPlayer(chess, username, { restore: isAdmin });
     if (!result) throw new NotFoundError(`Chess.com has no player called "${username}".`);
     if (result.changed) await invalidateLeaderboardCache();
-    io.emit('player_updated', result.profile);
+    broadcastSync(io, result);
     res.json({ success: true, data: result.profile });
   });
 

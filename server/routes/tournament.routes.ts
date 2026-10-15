@@ -1,13 +1,13 @@
 import { Router } from 'express';
-import type { PrismaClient } from '@prisma/client';
 import { authMiddleware, requireAdmin } from '../middleware/auth.middleware';
 import { parseGameResult, parseTimeControl, parseTournamentName, routeParam } from '../lib/validate';
+import type { MemberService } from '../services/member.service';
 import type { TournamentService } from '../services/tournament.service';
 
 /** HTTP layer only: parse input, call the service, send JSON. Rules live in TournamentService. */
-export function createTournamentRouter({ db, tournaments }: { db: PrismaClient; tournaments: TournamentService }) {
+export function createTournamentRouter({ members, tournaments }: { members: MemberService; tournaments: TournamentService }) {
   const router = Router();
-  const admin = requireAdmin(db);
+  const admin = requireAdmin(members);
 
   router.get('/', async (_req, res) => {
     res.json({ success: true, data: await tournaments.list() });
@@ -24,7 +24,8 @@ export function createTournamentRouter({ db, tournaments }: { db: PrismaClient; 
   });
 
   router.post('/:id/join', authMiddleware, async (req, res) => {
-    res.json({ success: true, data: await tournaments.join(routeParam(req.params, 'id'), req.user!.id) });
+    const member = await members.resolve(req.user!);
+    res.json({ success: true, data: await tournaments.join(routeParam(req.params, 'id'), member.id) });
   });
 
   router.post('/:id/generate-round', authMiddleware, admin, async (req, res) => {

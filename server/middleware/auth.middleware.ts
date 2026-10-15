@@ -1,12 +1,12 @@
 import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import type { PrismaClient } from '@prisma/client';
 import { config } from '../config';
+import type { MemberService } from '../services/member.service';
 import { ForbiddenError, UnauthorizedError } from '../lib/errors';
 
-/** The signed-in member, from the short-lived JWT the Next.js proxy attaches. */
+/** The signed-in user, from the short-lived JWT the Next.js proxy attaches. */
 export interface AuthUser {
-  /** Stable identity: "provider:providerAccountId". */
+  /** The sign-in's stable id, "provider:providerAccountId" (an Identity's authId, not a member id). */
   id: string;
   email?: string;
   name?: string;
@@ -66,12 +66,12 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
-/** Use after authMiddleware. Admin status lives in the database, not the token. */
-export function requireAdmin(db: PrismaClient) {
+/** Use after authMiddleware. Admin status lives in the database, on the member, not the token. */
+export function requireAdmin(members: MemberService) {
   return async (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) throw new UnauthorizedError();
-    const account = await db.user.findUnique({ where: { authId: req.user.id }, select: { role: true } });
-    if (account?.role !== 'ADMIN') throw new ForbiddenError('Only club admins can do this.');
+    const member = await members.find(req.user.id);
+    if (member?.role !== 'ADMIN') throw new ForbiddenError('Only club admins can do this.');
     next();
   };
 }

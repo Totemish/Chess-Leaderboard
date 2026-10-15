@@ -10,21 +10,34 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// A member: one person, however many ways they sign in.
 model User {
   id             String        @id @default(uuid())
-  authId         String        @unique
   name           String?
   email          String?
   image          String?
-  provider       String?       // "google", "github", "discord"
-  providerAccountId String?    // OAuth account ID
+  // The verified institute address that identifies the person. A first sign-in
+  // proving the same address joins this member instead of creating another.
+  instituteEmail String?       @unique
   chessProfileId String?       @unique
   chessProfile   ChessProfile? @relation(fields: [chessProfileId], references: [id])
   role           Role          @default(USER)
+  identities     Identity[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+}
 
-  @@unique([provider, providerAccountId])
+// One way to sign in (a Google, GitHub or Discord account). A member can have several.
+model Identity {
+  id        String   @id @default(uuid())
+  authId    String   @unique // "provider:providerAccountId", the subject of the web app's tokens
+  provider  String   // "google", "github", "discord"
+  email     String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 enum Role {
@@ -32,9 +45,22 @@ enum Role {
   ADMIN
 }
 
+// Whether a player is on the leaderboard. Only ACTIVE players are listed; the
+// others keep their rating history and tournament results.
+enum PlayerStatus {
+  ACTIVE
+  CLOSED           // Chess.com closed the account
+  CLOSED_FAIR_PLAY // Chess.com closed it for fair-play violations
+  MISSING          // Chess.com hasn't found the account for a day (deleted, or renamed)
+  REMOVED          // an admin took the player off the leaderboard
+}
+
 model ChessProfile {
   id             String          @id // Using lowercased username as primary key
   username       String          @unique
+  chessComId     Int?            @unique // Chess.com's permanent player_id: usernames can change, this can't
+  status         PlayerStatus    @default(ACTIVE)
+  missingSince   DateTime?       // First sync that couldn't find the account; cleared once it's found again
   displayName    String?
   avatarUrl      String?
   country        String?

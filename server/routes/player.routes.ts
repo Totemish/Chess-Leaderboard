@@ -21,12 +21,14 @@ export function createPlayerRouter({ db }: { db: PrismaClient }) {
     res.json({ success: true, data, nextCursor });
   });
 
+  // Everyone on the leaderboard, in any time control.
   router.get('/players', async (_req, res) => {
-    const players = await db.chessProfile.findMany({ orderBy: { username: 'asc' } });
+    const players = await db.chessProfile.findMany({ where: { status: 'ACTIVE' }, orderBy: { username: 'asc' } });
     res.json({ success: true, data: players });
   });
 
   // One player with their rating history (?days=, default a year, so the payload stays bounded).
+  // Hidden players are found too: their tournament games and history still link here.
   router.get('/players/:username', async (req, res) => {
     const username = parseChessUsername(req.params.username);
     const days = req.query.days === undefined ? 365 : Number(req.query.days);

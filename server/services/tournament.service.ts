@@ -63,10 +63,15 @@ export class TournamentService {
   }
 
   /** Registers the member's linked Chess.com account, seeded by its rating in the tournament's time control. */
-  async join(tournamentId: string, authId: string) {
-    const member = await this.db.user.findUnique({ where: { authId }, include: { chessProfile: true } });
+  async join(tournamentId: string, memberId: string) {
+    const member = await this.db.user.findUnique({ where: { id: memberId }, include: { chessProfile: true } });
     const profile = member?.chessProfile;
     if (!profile) throw new BadRequestError('Link your Chess.com account before joining a tournament.');
+    if (profile.status !== 'ACTIVE') {
+      throw new BadRequestError(
+        "Your linked Chess.com account isn't on the leaderboard any more. Link the account you play on from your dashboard."
+      );
+    }
 
     return this.db.$transaction(async (tx) => {
       const tournament = await this.lock(tx, tournamentId, ['PENDING'], 'Registration for this tournament has closed.');

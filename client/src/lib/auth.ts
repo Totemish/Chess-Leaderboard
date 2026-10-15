@@ -5,7 +5,8 @@ import Discord from 'next-auth/providers/discord';
 
 /**
  * Whether the provider vouches that the user owns their email address. The
- * API only lets verified @iitr.ac.in addresses join the leaderboard.
+ * API only lets verified IIT Roorkee addresses (@iitr.ac.in or a department
+ * subdomain such as @ece.iitr.ac.in) join the leaderboard.
  * - Google: the `email_verified` claim
  * - Discord: the `verified` flag on the user
  * - GitHub: the `verified` flag on that address in /user/emails
@@ -78,7 +79,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     async jwt({ token, account, profile }) {
       if (account) {
         // Without a database adapter, Auth.js gives every sign-in a fresh random
-        // user id (token.sub). The Express API stores that id as User.authId, so a
+        // user id (token.sub). The Express API stores that id as Identity.authId, so a
         // random one would orphan the user's linked Chess.com profile and admin
         // role each time they sign in again. Key users on the provider account,
         // which never changes.

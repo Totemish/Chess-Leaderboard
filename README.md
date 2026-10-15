@@ -8,7 +8,9 @@ A live leaderboard and tournament manager for IIT Roorkee's chess community. It 
 |---|---|
 | **Leaderboards** | Rapid, Blitz and Bullet rankings with standard competition ranking (tied ratings share a rank), search, and 90-day rating charts |
 | **Live updates** | The server re-syncs every player from Chess.com every 10 minutes and pushes changes over Socket.IO; the changed rank square lights up like a chessboard's last-move highlight |
-| **Verified sign-up** | Members sign in with Google, GitHub or Discord. Joining requires a verified `@iitr.ac.in` email and proof of ownership of the Chess.com account |
+| **Verified sign-up** | Members sign in with Google, GitHub or Discord. Joining requires a verified IIT Roorkee email (`@iitr.ac.in` or a department address such as `@ece.iitr.ac.in`) and proof of ownership of the Chess.com account |
+| **One account per person** | Every sign-in method with the same verified IITR email opens the same member, with the same Chess.com link and role |
+| **Account changes handled** | Accounts Chess.com closes or bans leave the leaderboard, missing ones after a day's grace, and renamed ones keep their history; nothing is deleted |
 | **Swiss tournaments** | Pairings by minimum-cost perfect matching (Edmonds' blossom algorithm), FIDE-style colour allocation, Buchholz tie-breaks, and a crosstable |
 | **Safe under concurrency** | Every tournament write runs in a transaction behind a row lock; standings are recomputed from the games, never incremented |
 | **Admin tools** | Admins create tournaments, pair rounds, enter results, finish events, and add players |
@@ -64,15 +66,41 @@ Standings (`domain/standings.ts`) are recomputed from the games after every chan
 
 - **One writer per tournament.** Joining, pairing, entering results and finishing each start with a conditional `UPDATE` on the tournament row, which locks it until the transaction commits. Concurrent requests for the same tournament run one after another and see each other's changes.
 - **No double counting.** A result is saved with a conditional update (`WHERE status = 'PENDING'`), and scores are derived from games rather than incremented.
-- **Integration tests** fire concurrent duplicate results, double "Pair" clicks and parallel results, and check the outcomes.
+- **One member per person, without locks.** A first sign-in creates or joins its member through upserts keyed on unique columns (`Identity.authId`, `User.instituteEmail`), which Postgres runs as `INSERT … ON CONFLICT`. If two first sign-ins race, both land on the same rows. Any other collision fails on a unique index and is retried (optimistic concurrency).
+- **Integration tests** fire concurrent duplicate results, double "Pair" clicks, parallel results and racing first sign-ins, and check the outcomes.
+
+## Members and sign-ins
+
+A member (`User`) is one person; each Google, GitHub or Discord account they sign in with is an `Identity` (one-to-many, like Auth.js's own User/Account tables). The member holds the Chess.com link and the admin role, so every way in reaches the same account.
+
+- The member is identified by their **verified institute email**. A sign-in seen for the first time joins the member who already has that address. With GitHub or Discord, it must be the account's main email.
+- Sign-ins without a verified institute email are never merged into anyone. Merging trusts exactly what joining already trusts, nothing more.
+- The ownership code is an HMAC of the member and the username, so it's the same whichever way the member signs in.
+
+## When a Chess.com account changes
+
+Players are never deleted automatically. Each sync moves a player through a small state machine (`domain/player-status.ts`), and only `ACTIVE` players are ranked:
+
+| Chess.com says | Result |
+|---|---|
+| The account is closed | `CLOSED` at once (or `CLOSED_FAIR_PLAY` for a cheating ban) |
+| No such player | Still listed for a 24-hour grace period, since one bad answer can be an outage; then `MISSING` |
+| The account is back | `ACTIVE` again: automatic hides undo themselves |
+
+- **Renames.** Chess.com gives every account a permanent `player_id`, which is stored with the player. When a renamed account turns up under its new name, its row moves to that username. `ON UPDATE CASCADE` carries the rating history, tournament games and member link along: the username is a natural key, and the `player_id` is what proves it's the same account.
+- **Admin removals** (`REMOVED`) stick through syncs until an admin adds the player again or the owner links the account again.
+- **Hidden players keep everything** (soft delete). Their history stays, past crosstables still show them, and their member sees why on the dashboard, with a button to link another account. They can't join new tournaments.
+- **Live pages refetch on structural changes.** Open pages patch a row on `player_updated`, and refetch the board on `leaderboard_changed` (a player joined, left or was renamed).
 
 ## Joining the leaderboard
 
 The leaderboard starts empty: every player comes from the database, and members add themselves.
 
-1. Sign in with an account whose `@iitr.ac.in` email the provider has verified. With GitHub or Discord, that address must be the account's main email.
+1. Sign in with an account whose IIT Roorkee email the provider has verified: `@iitr.ac.in` or a department subdomain such as `@ece.iitr.ac.in` (the check matches whole domain labels, so `@notiitr.ac.in` doesn't pass). With GitHub or Discord, that address must be the account's main email.
 2. On the dashboard, enter your Chess.com username. The API returns a code, an HMAC of your account and the username, so it needs no storage and only works for you.
 3. Put the code in the **Location** field of your Chess.com profile and press **Verify**. The API reads it back from Chess.com, adds you to the leaderboard and links the account. You can then remove the code.
+
+If an admin already added your Chess.com account, linking claims that existing row, so your rating history and tournament entries stay. The code is still needed: it proves the account is yours.
 
 Admins can also add or remove players directly (see [Managing players](#managing-players)), for example someone who hasn't signed up.
 
@@ -104,7 +132,9 @@ server/                      Express API (Dockerfile; migrations run on containe
     pairing/                 Swiss engine, colour rules, PairingStrategy interface
     standings.ts             scores and Buchholz
     ownership.ts             account-ownership codes
-  services/                  TournamentService, Chess.com client and sync, cache, cron
+    institute.ts             which emails count as IIT Roorkee addresses
+    player-status.ts         when players leave and rejoin the leaderboard (state machine)
+  services/                  MemberService, TournamentService, Chess.com client and sync, cache, cron
   routes/                    auth, players/leaderboard, tournaments
   middleware/                auth (JWT, admin), errors
   lib/                       error classes, input validation
@@ -148,23 +178,24 @@ npm run dev                 # http://localhost:3000
 Run these in `server/`. They use the database in `server/.env`.
 
 ```bash
-npm run players -- list                       # everyone on the leaderboard
-npm run players -- add hikaru magnuscarlsen   # add by Chess.com username
-npm run players -- remove hikaru              # preview what would be deleted
-npm run players -- remove hikaru --yes        # delete
+npm run players -- list                         # every player, and why any are hidden
+npm run players -- add hikaru magnuscarlsen     # add by Chess.com username (also restores a removed one)
+npm run players -- remove hikaru                # preview
+npm run players -- remove hikaru --yes          # take off the leaderboard, keeping history and results
+npm run players -- remove hikaru --purge --yes  # delete with their history and tournament entries
 ```
 
-Removing a player also deletes their rating history and tournament entries, and unlinks their member account. In production, use `node dist/scripts/players.js <command>` after building.
+Both kinds of removal unlink the player's member account. In production, use `node dist/scripts/players.js <command>` after building.
 
 ### Making someone an admin
 
-Admin status lives in the database. Open `npx prisma studio` in `server/`, find the member in `User` (after they've signed in once), and set `role` to `ADMIN`.
+Admin status lives in the database, on the member. Open `npx prisma studio` in `server/`, find the member in `User` by their `instituteEmail` (after they've signed in once), and set `role` to `ADMIN`. Every way they sign in is then an admin.
 
 ## Tests
 
 ```bash
 cd server
-npm test                    # unit tests: matching, pairing, standings, ownership codes
+npm test                    # unit tests: matching, pairing, standings, ownership codes, emails, player status
 npm run typecheck
 ```
 
@@ -185,9 +216,9 @@ All responses are `{ success, data }` or `{ success: false, error }`. "Member" m
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
 | GET | `/api/leaderboard/:format` | Public | Ranked players for `rapid`, `blitz` or `bullet`. `?cursor=` pages (100 per page), `?search=` filters |
-| GET | `/api/players` | Public | Every tracked player |
-| GET | `/api/players/:username` | Public | One player with rating history (`?days=`, default 365) |
-| GET | `/api/auth/me` | Member | The member, their linked profile and 90 days of history |
+| GET | `/api/players` | Public | Every player on the leaderboard |
+| GET | `/api/players/:username` | Public | One player with rating history (`?days=`, default 365), including players off the leaderboard; `status` says which |
+| GET | `/api/auth/me` | Member | The member, their sign-in methods, linked profile and 90 days of history |
 | POST | `/api/auth/link-profile/challenge` | Member | `{ chessUsername }` → ownership code |
 | POST | `/api/auth/link-profile` | Member | `{ chessUsername }` → verifies the code on Chess.com and links |
 | DELETE | `/api/auth/unlink-profile` | Member | Unlinks the member's Chess.com account |
@@ -202,7 +233,7 @@ All responses are `{ success, data }` or `{ success: false, error }`. "Member" m
 | DELETE | `/api/tournaments/:id` | Admin | Deletes the tournament with its registrations and games (players are kept) |
 | GET | `/health` | Public | Liveness check (also pings the database) |
 
-Socket.IO event `player_updated` carries a player's updated profile.
+Socket.IO events: `player_updated` carries a player's updated profile; `leaderboard_changed` (no payload) means a player joined or left the board, or was renamed, so clients refetch it.
 
 ## Deployment
 

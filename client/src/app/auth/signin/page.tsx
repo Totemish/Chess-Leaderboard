@@ -49,7 +49,9 @@ export default async function SignInPage({
         <ProviderButtons callbackUrl={safeCallback(params.callbackUrl)} />
 
         <p className="mt-8 border-t border-line pt-4 text-sm text-ink-faint">
-          To appear on the leaderboard, sign in with the account that uses your <strong className="font-semibold text-ink-soft">@iitr.ac.in</strong> email.
+          To appear on the leaderboard, sign in with the account that uses your IIT Roorkee email:{' '}
+          <strong className="font-semibold text-ink-soft">@iitr.ac.in</strong> or your department&apos;s, such as{' '}
+          <strong className="font-semibold text-ink-soft">@ece.iitr.ac.in</strong>.
         </p>
       </div>
     </div>

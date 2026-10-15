@@ -1,6 +1,7 @@
 import type { ChessProfile, Prisma } from '@prisma/client';
 import { prisma } from './db.service';
 import { UpstreamError } from '../lib/errors';
+import { nextListing, NEW_LISTING } from '../domain/player-status';
 
 const API_BASE = 'https://api.chess.com/pub';
 const DEFAULT_AVATAR = 'https://www.chess.com/bundles/web/images/user-image.svg';
@@ -8,6 +9,10 @@ const FORMATS = ['rapid', 'blitz', 'bullet'] as const;
 
 export interface ChessComProfile {
   username: string;
+  /** Chess.com's permanent account number; it survives username changes. */
+  player_id?: number;
+  /** "basic", "premium", "staff", … or "closed" / "closed:fair_play_violations". */
+  status?: string;
   name?: string;
   avatar?: string;
   /** e.g. "https://api.chess.com/pub/country/IN" */
@@ -67,22 +72,48 @@ export interface SyncResult {
   profile: ChessProfile;
   /** True when anything shown on the leaderboard changed. */
   changed: boolean;
+  /**
+   * True when the player joined or left the leaderboard, or was renamed: open
+   * pages should refetch the board instead of patching one row.
+   */
+  relisted: boolean;
+}
+
+export interface SyncOptions {
+  /** Bring back a player an admin removed: an admin adding them again, or their owner linking them. */
+  restore?: boolean;
 }
 
 const countryCode = (url?: string) => (url ? url.slice(url.lastIndexOf('/') + 1).toUpperCase() : null);
 
 /**
  * Pulls one player's profile and ratings from Chess.com into the database and
- * records today's rating history. Returns null if Chess.com has no such player.
+ * records today's rating history. Returns null if Chess.com has no such player
+ * (recordMissing handles players it used to know).
+ *
+ * Accounts Chess.com has closed are kept but leave the leaderboard (see
+ * nextListing). A renamed account is recognised by its player_id and moved
+ * to the new username along with its history.
+ *
  * The two requests run one after the other: Chess.com allows unlimited serial
  * requests but may reject parallel ones.
  */
-export async function syncPlayer(client: ChessComClient, username: string, displayName?: string): Promise<SyncResult | null> {
+export async function syncPlayer(
+  client: ChessComClient,
+  username: string,
+  { restore = false }: SyncOptions = {}
+): Promise<SyncResult | null> {
   const remote = await client.getProfile(username);
   if (!remote) return null;
-  const stats = (await client.getStats(username)) ?? {};
 
-  const id = username.trim().toLowerCase();
+  const now = new Date();
+  // Chess.com's own spelling of the name, which differs from the request after a rename.
+  const id = remote.username.toLowerCase();
+  const { existing, renamed } = await findPlayer(remote, username.trim().toLowerCase());
+  const listing = nextListing(existing ?? NEW_LISTING, { found: true, accountStatus: remote.status }, now, restore);
+
+  // Hidden players keep their last ratings, so only listed ones need the stats request.
+  const stats = listing.status === 'ACTIVE' ? ((await client.getStats(id)) ?? {}) : {};
   const ratings = {
     rapid: stats.chess_rapid?.last?.rating ?? null,
     blitz: stats.chess_blitz?.last?.rating ?? null,
@@ -92,12 +123,11 @@ export async function syncPlayer(client: ChessComClient, username: string, displ
     avatarUrl: remote.avatar || DEFAULT_AVATAR,
     country: countryCode(remote.country),
     title: remote.title || null,
+    ...listing,
+    ...(remote.player_id ? { chessComId: remote.player_id } : {}),
   };
 
-  const existing = await prisma.chessProfile.findUnique({ where: { id } });
-
-  const update: Prisma.ChessProfileUpdateInput = { ...shared, lastUpdated: new Date() };
-  if (displayName) update.displayName = displayName;
+  const update: Prisma.ChessProfileUpdateInput = { ...shared, lastUpdated: now };
   // A missing rating means "no data this time", not "reset": keep the stored value.
   if (ratings.rapid !== null) update.rapidRating = ratings.rapid;
   if (ratings.blitz !== null) update.blitzRating = ratings.blitz;
@@ -109,7 +139,7 @@ export async function syncPlayer(client: ChessComClient, username: string, displ
     create: {
       id,
       username: remote.username,
-      displayName: displayName || remote.name || remote.username,
+      displayName: remote.name || remote.username,
       ...shared,
       rapidRating: ratings.rapid,
       blitzRating: ratings.blitz,
@@ -118,7 +148,7 @@ export async function syncPlayer(client: ChessComClient, username: string, displ
   });
 
   // One history row per player, format and UTC day; later syncs that day overwrite it.
-  const today = new Date();
+  const today = new Date(now);
   today.setUTCHours(0, 0, 0, 0);
   for (const format of FORMATS) {
     const rating = ratings[format];
@@ -130,8 +160,10 @@ export async function syncPlayer(client: ChessComClient, username: string, displ
     });
   }
 
+  const relisted = !!existing && (renamed || (existing.status === 'ACTIVE') !== (profile.status === 'ACTIVE'));
   const changed =
     !existing ||
+    relisted ||
     existing.rapidRating !== profile.rapidRating ||
     existing.blitzRating !== profile.blitzRating ||
     existing.bulletRating !== profile.bulletRating ||
@@ -139,5 +171,55 @@ export async function syncPlayer(client: ChessComClient, username: string, displ
     existing.title !== profile.title ||
     existing.displayName !== profile.displayName;
 
-  return { profile, changed };
+  return { profile, changed, relisted };
+}
+
+/**
+ * Records that Chess.com has no player by this name although we track one.
+ * They stay listed through a grace period, then are hidden (see nextListing).
+ * Returns null when we don't track the player either.
+ */
+export async function recordMissing(username: string, now = new Date()): Promise<SyncResult | null> {
+  const id = username.trim().toLowerCase();
+  const existing = await prisma.chessProfile.findUnique({ where: { id } });
+  if (!existing) return null;
+
+  const listing = nextListing(existing, { found: false }, now);
+  const same = listing.status === existing.status && listing.missingSince?.getTime() === existing.missingSince?.getTime();
+  const profile = same ? existing : await prisma.chessProfile.update({ where: { id }, data: listing });
+  const relisted = profile.status !== existing.status;
+  return { profile, changed: relisted, relisted };
+}
+
+/**
+ * Our row for a Chess.com account: by its current username, or else by its
+ * permanent player_id. A row found by player_id under an old username is
+ * moved to the new one; ON UPDATE CASCADE carries its rating history,
+ * tournament games and member link along.
+ */
+async function findPlayer(remote: ChessComProfile, requestedId: string) {
+  const id = remote.username.toLowerCase();
+  const playerId = remote.player_id ?? null;
+  const byName = await prisma.chessProfile.findUnique({ where: { id } });
+  const byAccount = playerId ? await prisma.chessProfile.findUnique({ where: { chessComId: playerId } }) : null;
+
+  if (byName) {
+    if (byName.chessComId && playerId && byName.chessComId !== playerId) {
+      // The name now belongs to a different Chess.com account. A member link
+      // proved ownership of the old account, so it must not carry over.
+      await prisma.user.updateMany({ where: { chessProfileId: id }, data: { chessProfileId: null } });
+    }
+    if (byAccount && byAccount.id !== id) {
+      // Renamed, then added again under the new name: keep the current name's
+      // row and free the id, so the old row simply goes missing.
+      await prisma.chessProfile.update({ where: { id: byAccount.id }, data: { chessComId: null } });
+    }
+    return { existing: byName, renamed: false };
+  }
+
+  // Rows stored before player_ids were recorded are still found by the name asked for.
+  const previous = byAccount ?? (requestedId !== id ? await prisma.chessProfile.findUnique({ where: { id: requestedId } }) : null);
+  if (!previous) return { existing: null, renamed: false };
+  const moved = await prisma.chessProfile.update({ where: { id: previous.id }, data: { id, username: remote.username } });
+  return { existing: moved, renamed: true };
 }

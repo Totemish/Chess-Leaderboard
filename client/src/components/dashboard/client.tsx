@@ -10,8 +10,11 @@ import {
   FORMATS,
   getRating,
   INSTITUTE_EMAIL_DOMAIN,
+  isInstituteEmail,
+  isListed,
   ordinal,
   playerName,
+  providerName,
 } from '@/lib/chess';
 import { cn } from '@/lib/utils';
 import { useMe } from '@/hooks/use-me';
@@ -20,7 +23,7 @@ import TitleBadge from '@/components/ui/title-badge';
 import RatingChart from '@/components/charts/rating-chart';
 import { buttonStyles } from '@/components/ui/button';
 import { ErrorMessage } from '@/components/ui/messages';
-import type { ApiResponse, LeaderboardResponse, PlayerDetails, RatingFormat } from '@/types';
+import type { ApiResponse, Identity, LeaderboardResponse, PlayerDetails, PlayerStatus, RatingFormat } from '@/types';
 
 export default function DashboardClient() {
   const { session, me, isAdmin, error, isLoading, mutate } = useMe();
@@ -46,6 +49,14 @@ export default function DashboardClient() {
   }
 
   const name = user.name || user.email || 'Your dashboard';
+  const emailVerified = session?.emailVerified === true;
+  const linkForm: LinkFormProps = {
+    email: user.email ?? null,
+    emailVerified,
+    // An API from before member identities doesn't send instituteEmail; judge by this sign-in then.
+    memberVerified: me.instituteEmail === undefined ? isInstituteEmail(user.email) && emailVerified : !!me.instituteEmail,
+    onLinked: () => mutate(),
+  };
 
   return (
     <Page>
@@ -63,11 +74,38 @@ export default function DashboardClient() {
       </header>
 
       {me.chessProfileId ? (
-        <LinkedProfile username={me.chessProfileId} onUnlinked={() => mutate()} />
+        <LinkedProfile key={me.chessProfileId} username={me.chessProfileId} linkForm={linkForm} onUnlinked={() => mutate()} />
       ) : (
-        <LinkForm email={user.email ?? null} emailVerified={session?.emailVerified === true} onLinked={() => mutate()} />
+        <LinkForm {...linkForm} />
       )}
+
+      <SignInMethods identities={me.identities ?? []} instituteEmail={me.instituteEmail ?? null} />
     </Page>
+  );
+}
+
+/** Every way this member signs in; each one opens this same dashboard. */
+function SignInMethods({ identities, instituteEmail }: { identities: Identity[]; instituteEmail: string | null }) {
+  if (identities.length === 0) return null;
+  return (
+    <section aria-labelledby="sign-in-heading" className="mt-10 max-w-xl">
+      <h2 id="sign-in-heading" className="text-sm font-semibold text-ink-soft">
+        Signed in with
+      </h2>
+      <ul className="mt-3 divide-y divide-line rounded-lg border border-line bg-surface">
+        {identities.map((identity, i) => (
+          <li key={i} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-3 text-sm">
+            <span className="font-semibold">{providerName(identity.provider)}</span>
+            {identity.email && <span className="min-w-0 truncate text-ink-soft">{identity.email}</span>}
+          </li>
+        ))}
+      </ul>
+      {instituteEmail && (
+        <p className="mt-2 text-sm text-ink-faint">
+          Any Google, GitHub or Discord account whose main email is {instituteEmail} opens this same account.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -80,22 +118,23 @@ interface Challenge {
   code: string;
 }
 
+interface LinkFormProps {
+  /** The current sign-in's email, and whether its provider verified it. */
+  email: string | null;
+  emailVerified: boolean;
+  /** Whether the member has a verified institute email (from any of their sign-ins): the API's rule. */
+  memberVerified: boolean;
+  onLinked: () => Promise<unknown>;
+}
+
 /**
  * Linking takes two steps so nobody can claim someone else's account:
  * 1. The API checks the username exists and returns a code tied to this member.
  * 2. The member puts the code on their Chess.com profile; the API reads it back.
  */
-function LinkForm({
-  email,
-  emailVerified,
-  onLinked,
-}: {
-  email: string | null;
-  emailVerified: boolean;
-  onLinked: () => Promise<unknown>;
-}) {
-  const institute = !!email && email.toLowerCase().endsWith(INSTITUTE_EMAIL_DOMAIN);
-  const eligible = institute && emailVerified;
+function LinkForm({ email, emailVerified, memberVerified, onLinked }: LinkFormProps) {
+  const institute = isInstituteEmail(email);
+  const eligible = memberVerified;
   const [username, setUsername] = useState('');
   const [challenge, setChallenge] = useState<Challenge | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -158,10 +197,12 @@ function LinkForm({
         </p>
       )}
 
-      {!institute && (
+      {!eligible && !institute && (
         <div className="mt-5 rounded-md border border-line-strong bg-paper px-4 py-3 text-sm text-ink">
           <p>
-            Linking needs an <strong className="font-semibold">{INSTITUTE_EMAIL_DOMAIN}</strong> email.
+            Linking needs an IIT Roorkee email, such as{' '}
+            <strong className="font-semibold">name@{INSTITUTE_EMAIL_DOMAIN}</strong> or{' '}
+            <strong className="font-semibold">name@ece.{INSTITUTE_EMAIL_DOMAIN}</strong>.
             {email ? <> You&apos;re signed in as {email}.</> : <> This account didn&apos;t share an email address.</>}
           </p>
           <button type="button" onClick={signInAgain} className={cn('mt-2', link)}>
@@ -169,7 +210,7 @@ function LinkForm({
           </button>
         </div>
       )}
-      {institute && !emailVerified && (
+      {!eligible && institute && !emailVerified && (
         <div className="mt-5 rounded-md border border-line-strong bg-paper px-4 py-3 text-sm text-ink">
           <p>
             Your sign-in provider hasn&apos;t confirmed that {email} belongs to you. Sign in again, ideally with the Google
@@ -177,6 +218,14 @@ function LinkForm({
           </p>
           <button type="button" onClick={signInAgain} className={cn('mt-2', link)}>
             Sign in again
+          </button>
+        </div>
+      )}
+      {!eligible && institute && emailVerified && (
+        <div className="mt-5 rounded-md border border-line-strong bg-paper px-4 py-3 text-sm text-ink">
+          <p>{email} already belongs to another member account here. Sign in the way you did before to link.</p>
+          <button type="button" onClick={signInAgain} className={cn('mt-2', link)}>
+            Sign in another way
           </button>
         </div>
       )}
@@ -259,13 +308,33 @@ function LinkForm({
   );
 }
 
-function LinkedProfile({ username, onUnlinked }: { username: string; onUnlinked: () => Promise<unknown> }) {
+/** Why a linked account is off the leaderboard. */
+const HIDDEN_REASON: Record<PlayerStatus, string> = {
+  ACTIVE: '',
+  CLOSED: "Chess.com has closed this account, so it's no longer on the leaderboard.",
+  CLOSED_FAIR_PLAY: "Chess.com closed this account for breaking its fair-play rules, so it's no longer on the leaderboard.",
+  MISSING:
+    "Chess.com hasn't found this account for over a day, so it's off the leaderboard. If you renamed it, link the new username: your history moves with it.",
+  REMOVED: 'A club admin took this account off the leaderboard.',
+};
+
+function LinkedProfile({
+  username,
+  linkForm,
+  onUnlinked,
+}: {
+  username: string;
+  /** For linking a replacement when this account has left the leaderboard. */
+  linkForm: LinkFormProps;
+  onUnlinked: () => Promise<unknown>;
+}) {
   // The public player endpoint returns the full history; /auth/me only returns its oldest rows.
   const { data, error, mutate } = useSWR<ApiResponse<PlayerDetails>>(
     `${API_URL}/api/players/${encodeURIComponent(username)}`,
     fetchJson
   );
   const [format, setFormat] = useState<RatingFormat>('rapid');
+  const [relinking, setRelinking] = useState(false);
 
   if (error) {
     return (
@@ -283,6 +352,7 @@ function LinkedProfile({ username, onUnlinked }: { username: string; onUnlinked:
   }
 
   const profile = data.data;
+  const listed = isListed(profile);
 
   return (
     <>
@@ -305,10 +375,24 @@ function LinkedProfile({ username, onUnlinked }: { username: string; onUnlinked:
           </div>
         </div>
         <div className="flex flex-wrap items-start gap-2">
-          <RefreshControl username={profile.username} onRefreshed={() => mutate()} />
+          {listed && <RefreshControl username={profile.username} onRefreshed={() => mutate()} />}
           <UnlinkControl onUnlinked={onUnlinked} />
         </div>
       </section>
+
+      {!listed && (
+        <div role="status" className="mt-4 rounded-md border border-line-strong bg-paper px-4 py-3 text-sm text-ink">
+          <p>
+            {HIDDEN_REASON[profile.status ?? 'ACTIVE']} Its rating history and tournament results are kept.
+          </p>
+          {!relinking && (
+            <button type="button" onClick={() => setRelinking(true)} className={buttonStyles({ size: 'sm', className: 'mt-3' })}>
+              Link a different account
+            </button>
+          )}
+        </div>
+      )}
+      {!listed && relinking && <LinkForm {...linkForm} />}
 
       <section aria-labelledby="ratings-heading" className="mt-8">
         <h2 id="ratings-heading" className="text-sm font-semibold text-ink-soft">
@@ -322,6 +406,7 @@ function LinkedProfile({ username, onUnlinked }: { username: string; onUnlinked:
               label={f.label}
               rating={getRating(profile, f.id)}
               profileId={profile.id}
+              listed={listed}
               selected={format === f.id}
               onSelect={() => setFormat(f.id)}
             />
@@ -347,6 +432,7 @@ function RatingTile({
   label,
   rating,
   profileId,
+  listed,
   selected,
   onSelect,
 }: {
@@ -354,14 +440,20 @@ function RatingTile({
   label: string;
   rating: number | null;
   profileId: string;
+  listed: boolean;
   selected: boolean;
   onSelect: () => void;
 }) {
   // Same URL as the leaderboard's first page, so SWR shares the cache between the two.
-  const { data } = useSWR<LeaderboardResponse>(rating === null ? null : `${API_URL}/api/leaderboard/${format}`, fetchJson);
+  const { data } = useSWR<LeaderboardResponse>(
+    rating === null || !listed ? null : `${API_URL}/api/leaderboard/${format}`,
+    fetchJson
+  );
 
   let standing = 'No rating yet';
-  if (rating !== null && data) {
+  if (!listed) {
+    standing = 'Not on the leaderboard';
+  } else if (rating !== null && data) {
     const players = data.data;
     const index = players.findIndex((p) => p.id === profileId);
     const total = data.nextCursor ? `${players.length}+` : String(players.length);
