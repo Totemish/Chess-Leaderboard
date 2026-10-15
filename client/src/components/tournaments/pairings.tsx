@@ -18,20 +18,26 @@ const CHOICES: { id: Choice; label: string }[] = [
   { id: 'black', label: '0–1' },
 ];
 
-/** One round's games, board 1 first, with result entry for admins. */
+/**
+ * One round's games, board 1 first, with result entry for admins. Scores are
+ * the points each player brought into the round, as on a pairing sheet.
+ */
 export default function Pairings({
   tournamentId,
   matches,
-  scoreOf,
+  scoreBefore,
   myProfileId,
   canRecord,
+  canChange,
   onRecorded,
 }: {
   tournamentId: string;
   matches: Match[];
-  scoreOf: Map<string, number>;
+  scoreBefore: Map<string, number>;
   myProfileId: string | null;
   canRecord: boolean;
+  /** Whether entered results can still be corrected: only in the latest round of a running event. */
+  canChange: boolean;
   onRecorded: () => Promise<unknown>;
 }) {
   return (
@@ -49,7 +55,7 @@ export default function Pairings({
               <PlayerCell
                 profile={match.player1}
                 colour={isBye(match) ? null : 'white'}
-                score={match.player1Id ? scoreOf.get(match.player1Id) : undefined}
+                score={match.player1Id ? (scoreBefore.get(match.player1Id) ?? 0) : undefined}
                 won={match.status === 'COMPLETED' && !match.isDraw && match.winnerId === match.player1Id}
                 isYou={!!myProfileId && match.player1Id === myProfileId}
                 className="col-start-1 row-start-1 sm:justify-end sm:text-right"
@@ -64,7 +70,7 @@ export default function Pairings({
                 <PlayerCell
                   profile={match.player2}
                   colour="black"
-                  score={match.player2Id ? scoreOf.get(match.player2Id) : undefined}
+                  score={match.player2Id ? (scoreBefore.get(match.player2Id) ?? 0) : undefined}
                   won={match.status === 'COMPLETED' && !match.isDraw && match.winnerId === match.player2Id}
                   isYou={!!myProfileId && match.player2Id === myProfileId}
                   className="col-start-1 row-start-2 sm:col-start-3 sm:row-start-1"
@@ -73,6 +79,9 @@ export default function Pairings({
             </div>
             {canRecord && match.status === 'PENDING' && !isBye(match) && (
               <ResultEntry tournamentId={tournamentId} match={match} onRecorded={onRecorded} />
+            )}
+            {canRecord && canChange && match.status === 'COMPLETED' && !isBye(match) && (
+              <ResultChange tournamentId={tournamentId} match={match} onRecorded={onRecorded} />
             )}
           </div>
         </li>
@@ -125,7 +134,7 @@ function PlayerCell({
         )}
       </span>
       {score !== undefined && (
-        <span className="shrink-0 text-sm text-ink-faint tabular-nums" title="Tournament points">
+        <span className="shrink-0 text-sm text-ink-faint tabular-nums" title="Points before this round">
           {formatScore(score)}
         </span>
       )}
@@ -152,7 +161,14 @@ function ResultCell({ match }: { match: Match }) {
   );
 }
 
-function ResultEntry({
+/** The entered result as one of the three choices. */
+function currentChoice(match: Match): Choice {
+  if (match.isDraw) return 'draw';
+  return match.winnerId === match.player1Id ? 'white' : 'black';
+}
+
+/** A "Change" link under an entered result, opening the result buttons to correct it. */
+function ResultChange({
   tournamentId,
   match,
   onRecorded,
@@ -161,7 +177,46 @@ function ResultEntry({
   match: Match;
   onRecorded: () => Promise<unknown>;
 }) {
-  const [choice, setChoice] = useState<Choice | null>(null);
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <div className="mt-2 flex justify-center">
+        <button type="button" onClick={() => setOpen(true)} className={buttonStyles({ variant: 'quiet', size: 'sm' })}>
+          Change result
+        </button>
+      </div>
+    );
+  }
+  return (
+    <ResultEntry
+      tournamentId={tournamentId}
+      match={match}
+      initial={currentChoice(match)}
+      onRecorded={onRecorded}
+      onCancel={() => setOpen(false)}
+    />
+  );
+}
+
+/**
+ * The three result buttons. A first entry POSTs; with `initial` set it
+ * corrects an entered result instead (PUT), and Cancel closes it.
+ */
+function ResultEntry({
+  tournamentId,
+  match,
+  initial,
+  onRecorded,
+  onCancel,
+}: {
+  tournamentId: string;
+  match: Match;
+  initial?: Choice;
+  onRecorded: () => Promise<unknown>;
+  onCancel?: () => void;
+}) {
+  const correcting = initial !== undefined;
+  const [choice, setChoice] = useState<Choice | null>(initial ?? null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -174,8 +229,11 @@ function ResultEntry({
     setPending(true);
     setError(null);
     try {
-      await sendJson(`/api/backend/tournaments/${tournamentId}/matches/${match.id}/result`, 'POST', { result: choice });
+      await sendJson(`/api/backend/tournaments/${tournamentId}/matches/${match.id}/result`, correcting ? 'PUT' : 'POST', {
+        result: choice,
+      });
       await onRecorded();
+      onCancel?.();
     } catch (err) {
       setError(describeError(err));
       setPending(false);
@@ -185,7 +243,7 @@ function ResultEntry({
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
       <span id={`result-label-${match.id}`} className="mr-1 text-sm text-ink-soft">
-        Result
+        {correcting ? 'Correct the result' : 'Result'}
       </span>
       <div role="group" aria-labelledby={`result-label-${match.id}`} className="flex gap-1">
         {CHOICES.map((c) => (
@@ -207,14 +265,19 @@ function ResultEntry({
           </button>
         ))}
       </div>
-      {choice && (
+      {(choice || correcting) && (
         <>
-          <button type="button" onClick={save} disabled={pending} className={buttonStyles({ size: 'sm', className: 'ml-1' })}>
-            {pending ? 'Saving…' : 'Save result'}
+          <button
+            type="button"
+            onClick={save}
+            disabled={pending || !choice || choice === initial}
+            className={buttonStyles({ size: 'sm', className: 'ml-1' })}
+          >
+            {pending ? 'Saving…' : correcting ? 'Save change' : 'Save result'}
           </button>
           <button
             type="button"
-            onClick={() => setChoice(null)}
+            onClick={() => (correcting ? onCancel?.() : setChoice(null))}
             disabled={pending}
             className={buttonStyles({ variant: 'quiet', size: 'sm' })}
           >

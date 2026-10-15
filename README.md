@@ -11,9 +11,9 @@ A live leaderboard and tournament manager for IIT Roorkee's chess community. It 
 | **Verified sign-up** | Members sign in with Google, GitHub or Discord. Joining requires a verified IIT Roorkee email (`@iitr.ac.in` or a department address such as `@ece.iitr.ac.in`) and proof of ownership of the Chess.com account |
 | **One account per person** | Every sign-in method with the same verified IITR email opens the same member, with the same Chess.com link and role |
 | **Account changes handled** | Accounts Chess.com closes or bans leave the leaderboard, missing ones after a day's grace, and renamed ones keep their history; nothing is deleted |
-| **Swiss tournaments** | Pairings by minimum-cost perfect matching (Edmonds' blossom algorithm), FIDE-style colour allocation, Buchholz tie-breaks, and a crosstable |
+| **Swiss tournaments** | Pairings by minimum-cost perfect matching (Edmonds' blossom algorithm), FIDE-style colour allocation and byes, Buchholz tie-breaks, and a crosstable |
 | **Safe under concurrency** | Every tournament write runs in a transaction behind a row lock; standings are recomputed from the games, never incremented |
-| **Admin tools** | Admins create tournaments, pair rounds, enter results, finish events, and add players |
+| **Admin tools** | Admins create tournaments, choose each event's players, pair rounds, enter and correct results, finish events, and manage the leaderboard |
 
 ## Architecture
 
@@ -47,7 +47,7 @@ A live leaderboard and tournament manager for IIT Roorkee's chess community. It 
 1. Every possible board gets a cost built from strict priority tiers, from most to least important:
    1. rematch, or a second bye
    2. two players who both *must* have the same colour
-   3. score difference, squared (two half-point floats beat one full-point float)
+   3. score difference, squared (two half-point floats beat one full-point float). As in the FIDE Dutch rules, a bye is measured against a virtual opponent one point below the lowest score, so it goes to the lowest score group even when that costs other floats
    4. strong colour preference
    5. mild colour preference
    6. Dutch-system order (top half of a score group meets the bottom half)
@@ -56,15 +56,17 @@ A live leaderboard and tournament manager for IIT Roorkee's chess community. It 
 2. **Edmonds' blossom algorithm** (`domain/matching/blossom.ts`, O(n³)) finds the optimal perfect matching. The Hungarian algorithm can't be used: pairing graphs aren't bipartite, so odd cycles ("blossoms") must be handled.
 3. Colours follow the FIDE Dutch rules: grant both preferences, otherwise the stronger one, otherwise alternate from the last round the players differed, otherwise the higher-ranked player gets theirs.
 
-Rematches are very expensive but not forbidden, so a round can always be paired; a rematch only happens when no other pairing exists.
+Rematches are very expensive but not forbidden, so a round can always be paired; a rematch only happens when no other pairing exists. Each round is optimal on its own, so a field of 5–6 players playing nearly an all-play-all can run out of clean pairings in its last rounds; the admin page warns when a round goes past *players − 2*.
 
-**Verified by tests:** the blossom implementation matches an exact brute-force optimum on 6,000 random graphs. The pairing engine matches an exact subset-DP oracle on rematches, colour clashes and score gaps across ~2,300 simulated rounds, and no player exceeds FIDE colour limits at typical event lengths.
+**Verified by tests:** the blossom implementation matches an exact brute-force optimum on 6,000 random graphs. The pairing engine matches an exact subset-DP oracle on rematches, colour clashes and score gaps across ~2,300 simulated rounds, and no player exceeds FIDE colour limits at typical event lengths. An integration test plays a whole 9-player, 5-round event through the service and the database and checks every rule: one board per player per round, no rematches or second byes, FIDE colour limits, stored standings equal to a fresh computation, and the published order.
 
-Standings (`domain/standings.ts`) are recomputed from the games after every change. Buchholz is the sum of opponents' scores, and a bye counts as an opponent with the player's own score.
+Standings (`domain/standings.ts`) are recomputed from the games after every change. Buchholz is the sum of opponents' scores, and a bye counts as an opponent with the player's own score. Players are ranked by points, then Buchholz, then seed rating; the crosstable shows both numbers so the order can be checked.
+
+**Running an event.** Admins build the field from the leaderboard and can add or remove players until round 1 is paired, so nobody can enter an event just to disrupt it. A result entered by mistake can be corrected while its round is the latest one; earlier rounds are fixed, because later pairings were made from them.
 
 ## Data integrity
 
-- **One writer per tournament.** Joining, pairing, entering results and finishing each start with a conditional `UPDATE` on the tournament row, which locks it until the transaction commits. Concurrent requests for the same tournament run one after another and see each other's changes.
+- **One writer per tournament.** Adding or removing players, pairing, entering or correcting results, and finishing each start with a conditional `UPDATE` on the tournament row, which locks it until the transaction commits. Concurrent requests for the same tournament run one after another and see each other's changes.
 - **No double counting.** A result is saved with a conditional update (`WHERE status = 'PENDING'`), and scores are derived from games rather than incremented.
 - **One member per person, without locks.** A first sign-in creates or joins its member through upserts keyed on unique columns (`Identity.authId`, `User.instituteEmail`), which Postgres runs as `INSERT … ON CONFLICT`. If two first sign-ins race, both land on the same rows. Any other collision fails on a unique index and is retried (optimistic concurrency).
 - **Integration tests** fire concurrent duplicate results, double "Pair" clicks, parallel results and racing first sign-ins, and check the outcomes.
@@ -182,10 +184,10 @@ npm run players -- list                         # every player, and why any are 
 npm run players -- add hikaru magnuscarlsen     # add by Chess.com username (also restores a removed one)
 npm run players -- remove hikaru                # preview
 npm run players -- remove hikaru --yes          # take off the leaderboard, keeping history and results
-npm run players -- remove hikaru --purge --yes  # delete with their history and tournament entries
+npm run players -- remove hikaru --purge --yes  # delete with their history (refused if they've played a tournament)
 ```
 
-Both kinds of removal unlink the player's member account. In production, use `node dist/scripts/players.js <command>` after building.
+Both kinds of removal unlink the player's member account. Purging someone who has played in a tournament is refused: their games would lose a player and count as byes, rewriting those standings. In production, use `node dist/scripts/players.js <command>` after building.
 
 ### Making someone an admin
 
@@ -226,9 +228,11 @@ All responses are `{ success, data }` or `{ success: false, error }`. "Member" m
 | GET | `/api/tournaments` | Public | All tournaments |
 | GET | `/api/tournaments/:id` | Public | Tournament with standings and games |
 | POST | `/api/tournaments` | Admin | `{ name, format }` creates a tournament |
-| POST | `/api/tournaments/:id/join` | Member | Registers the member's linked account |
+| POST | `/api/tournaments/:id/players` | Admin | `{ username }` adds a leaderboard player before round 1, seeded by the event's time control |
+| DELETE | `/api/tournaments/:id/players/:username` | Admin | Removes a player before round 1 |
 | POST | `/api/tournaments/:id/generate-round` | Admin | Pairs the next round |
-| POST | `/api/tournaments/:id/matches/:matchId/result` | Admin | `{ result: "white" \| "black" \| "draw" }` |
+| POST | `/api/tournaments/:id/matches/:matchId/result` | Admin | `{ result: "white" \| "black" \| "draw" }` enters a result |
+| PUT | `/api/tournaments/:id/matches/:matchId/result` | Admin | Corrects a result in the latest round |
 | POST | `/api/tournaments/:id/finish` | Admin | Closes the tournament once all results are in |
 | DELETE | `/api/tournaments/:id` | Admin | Deletes the tournament with its registrations and games (players are kept) |
 | GET | `/health` | Public | Liveness check (also pings the database) |

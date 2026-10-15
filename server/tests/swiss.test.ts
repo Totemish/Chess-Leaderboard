@@ -29,7 +29,8 @@ function priorities(pairings: readonly Pairing[], players: readonly PairingPlaye
   for (const { whiteId, blackId } of pairings) {
     if (blackId === null) {
       if (hadBye.has(whiteId)) repeats++;
-      gap += (2 * (score.get(whiteId)! - minScore)) ** 2;
+      // FIDE: the bye's score difference is taken against one point below the lowest score.
+      gap += (2 * (score.get(whiteId)! - minScore + 1)) ** 2;
       continue;
     }
     if (played.has([whiteId, blackId].sort().join('|'))) repeats++;
@@ -50,7 +51,7 @@ function optimalPriorities(players: readonly PairingPlayer[], history: readonly 
   const hadBye = new Set(history.filter((g) => g.blackId === null).map((g) => g.whiteId));
   const prefs = players.map((p) => colourPreference(coloursOf(p.id, history)));
   const cost = (i: number, j: number): [number, number, number] => {
-    if (j === n) return [hadBye.has(players[i]!.id) ? 1 : 0, 0, (2 * (players[i]!.score - minScore)) ** 2];
+    if (j === n) return [hadBye.has(players[i]!.id) ? 1 : 0, 0, (2 * (players[i]!.score - minScore + 1)) ** 2];
     const a = players[i]!;
     const b = players[j]!;
     const clash = prefs[i]!.strength === 'absolute' && prefs[j]!.strength === 'absolute' && prefs[i]!.colour === prefs[j]!.colour;
@@ -126,6 +127,25 @@ test('an odd field gives the bye to the lowest-ranked player', () => {
   const players = Array.from({ length: 5 }, (_, i) => ({ id: `s${i + 1}`, score: 0, rating: 2000 - i * 50 }));
   const pairings = engine.pairRound(players, []);
   assert.deepEqual(pairings[pairings.length - 1], { whiteId: 's5', blackId: null });
+});
+
+test('the bye goes to the lowest score, even if that means two half-point floats', () => {
+  // Round 1: anna lost to chen, dev drew ben, esha had the bye. Ben and dev can't meet again,
+  // so someone floats either way. FIDE wants the bye on the lowest score: anna's 0, not dev's ½.
+  const players = [
+    { id: 'anna', score: 0, rating: 1910 },
+    { id: 'ben', score: 0.5, rating: 1840 },
+    { id: 'chen', score: 1, rating: 1775 },
+    { id: 'dev', score: 0.5, rating: 1702 },
+    { id: 'esha', score: 1, rating: 1650 },
+  ];
+  const history = [
+    { round: 1, whiteId: 'anna', blackId: 'chen' },
+    { round: 1, whiteId: 'dev', blackId: 'ben' },
+    { round: 1, whiteId: 'esha', blackId: null },
+  ];
+  const pairings = engine.pairRound(players, history);
+  assert.deepEqual(pairings.find((p) => p.blackId === null), { whiteId: 'anna', blackId: null });
 });
 
 test('every player is paired exactly once, every round, even in long events', () => {

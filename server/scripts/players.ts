@@ -7,7 +7,7 @@
  *   npm run players -- add <chess.com username> [...]                   (also brings back a removed player)
  *   npm run players -- remove <chess.com username> [...]                (preview only)
  *   npm run players -- remove <chess.com username> [...] --yes          (takes them off the leaderboard)
- *   npm run players -- remove <chess.com username> [...] --purge --yes  (deletes them and their history)
+ *   npm run players -- remove <chess.com username> [...] --purge --yes  (deletes them and their history; not for tournament players)
  *
  * In production, after `npm run build`: node dist/scripts/players.js <command> …
  */
@@ -72,25 +72,34 @@ async function add(usernames: string[]) {
 
 /**
  * By default a removal only hides the player: their rating history and past
- * tournament games stay, and `add` brings them back. --purge deletes the row,
- * which cascades to their history and tournament entries and leaves their
- * past games showing "Removed player". Either way their member is unlinked.
+ * tournament games stay, and `add` brings them back. --purge deletes the row
+ * and their rating history, and is refused for anyone who has played in a
+ * tournament: their games would lose a player and count as byes, rewriting
+ * those standings. Either way their member is unlinked.
  */
 async function remove(usernames: string[], purge: boolean, confirmed: boolean) {
   for (const raw of usernames) {
     const id = raw.trim().toLowerCase();
     const profile = await prisma.chessProfile.findUnique({
       where: { id },
-      include: { user: true, _count: { select: { ratingHistories: true, tournaments: true } } },
+      include: {
+        user: true,
+        _count: { select: { ratingHistories: true, tournaments: true, matchesAsPlayer1: true, matchesAsPlayer2: true } },
+      },
     });
     if (!profile) {
       console.log(`${id}: not in the database`);
       continue;
     }
+    const { tournaments, matchesAsPlayer1, matchesAsPlayer2 } = profile._count;
+    if (purge && tournaments + matchesAsPlayer1 + matchesAsPlayer2 > 0) {
+      console.log(`${profile.username}: not purged, because they have played in tournaments. Remove them without --purge instead.`);
+      continue;
+    }
 
     const unlinks = profile.user ? `unlinks ${profile.user.email ?? 'a member'}` : null;
     const effects = purge
-      ? [`deletes ${profile._count.ratingHistories} rating-history rows`, `deletes ${profile._count.tournaments} tournament entries`, unlinks]
+      ? [`deletes ${profile._count.ratingHistories} rating-history rows`, unlinks]
       : ['hides it from the leaderboard', 'keeps its history and tournament results', unlinks];
     const summary = effects.filter(Boolean).join(', ');
 

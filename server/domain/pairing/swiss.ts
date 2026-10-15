@@ -71,7 +71,8 @@ export class SwissPairing implements PairingStrategy {
     const bye = n % 2 === 1 ? n : -1; // an extra vertex stands in for the bye
     const scores = ranked.map((p) => p.score);
     const minScore = Math.min(...scores);
-    const tiers = costTiers(Math.ceil(n / 2), Math.max(...scores) - minScore);
+    // The bye's score gap is measured from one point below the lowest score (see byeCost).
+    const tiers = costTiers(Math.ceil(n / 2), Math.max(...scores) - minScore + (bye === -1 ? 0 : 1));
 
     const costs: [number, number, number][] = [];
     for (let i = 0; i < n; i++) {
@@ -168,11 +169,16 @@ export class SwissPairing implements PairingStrategy {
     return cost;
   }
 
-  /** The bye goes to the lowest-ranked player in the lowest score group who hasn't had one. */
+  /**
+   * The bye goes to the lowest-ranked player in the lowest score group who
+   * hasn't had one. As in the FIDE Dutch rules, its score gap is measured
+   * against a virtual opponent one point below the lowest score, so a bye for
+   * a higher score always costs more than floating other players instead.
+   */
   private byeCost(p: Ranked, n: number, minScore: number, tiers: CostTiers): number {
     return (
       (p.hadBye ? tiers.repeat : 0) +
-      (2 * (p.score - minScore)) ** 2 * tiers.scoreGap +
+      (2 * (p.score - minScore + 1)) ** 2 * tiers.scoreGap +
       Math.min(RANK_CAP, n - 1 - p.index)
     );
   }

@@ -39,8 +39,8 @@ export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> 
   return body as T;
 }
 
-/** POST/DELETE helper for the authenticated backend proxy. */
-export function sendJson<T>(url: string, method: 'POST' | 'DELETE', body?: unknown): Promise<T> {
+/** POST/PUT/DELETE helper for the authenticated backend proxy. */
+export function sendJson<T>(url: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<T> {
   return fetchJson<T>(url, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },

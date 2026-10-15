@@ -47,16 +47,19 @@ function Cell({ cell }: { cell: CrosstableCell | null }) {
 
 /**
  * Standings as a chess crosstable: one row per player, one column per round.
- * Before round 1 it doubles as the list of registered players.
+ * Before round 1 it doubles as the list of registered players, where
+ * `renderAction` adds a per-player control (an admin's Remove).
  */
 export default function Crosstable({
   participants,
   matches,
   myProfileId,
+  renderAction,
 }: {
   participants: Participant[];
   matches: Match[];
   myProfileId: string | null;
+  renderAction?: (participant: Participant) => React.ReactNode;
 }) {
   const { rounds, rows } = buildCrosstable(participants, matches);
 
@@ -66,7 +69,7 @@ export default function Crosstable({
         <table className="w-full border-collapse text-sm">
           <caption className="sr-only">
             {rounds.length > 0
-              ? 'Standings. Each round shows the result and the opponent’s place: plus for a win, equals for a draw, minus for a loss.'
+              ? 'Standings. Each round shows the result and the opponent’s place: plus for a win, equals for a draw, minus for a loss. Ties are broken by Buchholz, then rating.'
               : 'Registered players, by rating.'}
           </caption>
           <thead>
@@ -86,8 +89,18 @@ export default function Crosstable({
                 </th>
               ))}
               {rounds.length > 0 && (
-                <th scope="col" className="px-4 py-2 text-right font-semibold">
-                  Points
+                <>
+                  <th scope="col" className="px-3 py-2 text-right font-semibold">
+                    Points
+                  </th>
+                  <th scope="col" className="px-4 py-2 text-right font-semibold">
+                    Buchholz
+                  </th>
+                </>
+              )}
+              {renderAction && (
+                <th scope="col" className="px-3 py-2">
+                  <span className="sr-only">Actions</span>
                 </th>
               )}
             </tr>
@@ -126,8 +139,12 @@ export default function Crosstable({
                     </td>
                   ))}
                   {rounds.length > 0 && (
-                    <td className="px-4 py-2 text-right font-bold text-ink tabular-nums">{formatScore(participant.score)}</td>
+                    <>
+                      <td className="px-3 py-2 text-right font-bold text-ink tabular-nums">{formatScore(participant.score)}</td>
+                      <td className="px-4 py-2 text-right text-ink-soft tabular-nums">{formatScore(participant.buchholz)}</td>
+                    </>
                   )}
+                  {renderAction && <td className="px-3 py-1.5 text-right">{renderAction(participant)}</td>}
                 </tr>
               );
             })}
@@ -135,9 +152,10 @@ export default function Crosstable({
         </table>
       </div>
       {rounds.length > 0 && (
-        <p className="mt-2 text-sm text-ink-faint">
-          Round columns show the opponent&apos;s place: + win, = draw, − loss. Rating is the rating each player
-          joined with.
+        <p className="mt-2 max-w-prose text-sm text-ink-faint">
+          Round columns show the opponent&apos;s place: + win, = draw, − loss. Equal points are split by Buchholz, the
+          total points of a player&apos;s opponents (a bye counts as an opponent on the player&apos;s own score), then by
+          rating. Rating is each player&apos;s rating when they were added.
         </p>
       )}
     </>

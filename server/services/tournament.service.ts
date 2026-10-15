@@ -18,12 +18,19 @@ const toGame = (m: Pick<Match, 'player1Id' | 'player2Id' | 'winnerId' | 'isDraw'
   completed: m.status === 'COMPLETED',
 });
 
+/** player1 is White, so "white" means player1 won. */
+const resultFields = (match: Pick<Match, 'player1Id' | 'player2Id'>, result: GameResult) => ({
+  isDraw: result === 'draw',
+  winnerId: result === 'white' ? match.player1Id : result === 'black' ? match.player2Id : null,
+});
+
 const withUserName = { include: { user: { select: { name: true } } } } as const;
 
 const DETAIL = {
   participants: {
     include: { profile: withUserName },
-    orderBy: [{ score: 'desc' }, { buchholz: 'desc' }, { seedRating: 'desc' }],
+    // The last key only makes full ties stable, so places never swap between page loads.
+    orderBy: [{ score: 'desc' }, { buchholz: 'desc' }, { seedRating: 'desc' }, { profileId: 'asc' }],
   },
   matches: {
     include: { player1: withUserName, player2: withUserName, winner: true },
@@ -62,28 +69,39 @@ export class TournamentService {
     return this.db.tournament.create({ data: { name, format } });
   }
 
-  /** Registers the member's linked Chess.com account, seeded by its rating in the tournament's time control. */
-  async join(tournamentId: string, memberId: string) {
-    const member = await this.db.user.findUnique({ where: { id: memberId }, include: { chessProfile: true } });
-    const profile = member?.chessProfile;
-    if (!profile) throw new BadRequestError('Link your Chess.com account before joining a tournament.');
-    if (profile.status !== 'ACTIVE') {
-      throw new BadRequestError(
-        "Your linked Chess.com account isn't on the leaderboard any more. Link the account you play on from your dashboard."
-      );
-    }
-
+  /**
+   * Registers a leaderboard player, seeded by their rating in the tournament's
+   * time control. Admins build the field, so nobody can enter themselves; the
+   * list locks once round 1 is paired.
+   */
+  async addPlayer(tournamentId: string, profileId: string) {
     return this.db.$transaction(async (tx) => {
-      const tournament = await this.lock(tx, tournamentId, ['PENDING'], 'Registration for this tournament has closed.');
+      const tournament = await this.lock(tx, tournamentId, ['PENDING'], 'Players can only be added before round 1 is paired.');
+      const profile = await tx.chessProfile.findUnique({ where: { id: profileId } });
+      if (!profile) throw new NotFoundError(`${profileId} isn't on the leaderboard.`);
+      if (profile.status !== 'ACTIVE') {
+        throw new BadRequestError(`${profile.username} isn't on the leaderboard any more, so they can't be added.`);
+      }
+      // The row lock serialises registrations, so this check can't race another add.
       const existing = await tx.tournamentParticipant.findUnique({
-        where: { tournamentId_profileId: { tournamentId, profileId: profile.id } },
+        where: { tournamentId_profileId: { tournamentId, profileId } },
       });
-      if (existing) throw new ConflictError("You're already registered for this tournament.");
+      if (existing) throw new ConflictError(`${profile.username} is already registered.`);
 
       const field = RATING_FIELD[tournament.format as TimeControl] ?? 'rapidRating';
       return tx.tournamentParticipant.create({
-        data: { tournamentId, profileId: profile.id, seedRating: profile[field] ?? 0 },
+        data: { tournamentId, profileId, seedRating: profile[field] ?? 0 },
+        include: { profile: withUserName },
       });
+    }, TX_OPTIONS);
+  }
+
+  /** Takes a player off the list before round 1 is paired. */
+  async removePlayer(tournamentId: string, profileId: string) {
+    await this.db.$transaction(async (tx) => {
+      await this.lock(tx, tournamentId, ['PENDING'], 'Players can only be removed before round 1 is paired.');
+      const { count } = await tx.tournamentParticipant.deleteMany({ where: { tournamentId, profileId } });
+      if (count === 0) throw new NotFoundError(`${profileId} isn't registered for this tournament.`);
     }, TX_OPTIONS);
   }
 
@@ -142,13 +160,30 @@ export class TournamentService {
       // request can never score the same game twice.
       const { count } = await tx.match.updateMany({
         where: { id: matchId, status: 'PENDING' },
-        data: {
-          status: 'COMPLETED',
-          isDraw: result === 'draw',
-          winnerId: result === 'white' ? match.player1Id : result === 'black' ? match.player2Id : null,
-        },
+        data: { status: 'COMPLETED', ...resultFields(match, result) },
       });
       if (count === 0) throw new ConflictError('This result has already been entered.');
+      await this.refreshStandings(tx, tournamentId);
+    }, TX_OPTIONS);
+  }
+
+  /**
+   * Corrects a result entered by mistake. Only the latest round can change:
+   * the rounds after an earlier one were paired from its results.
+   */
+  async changeResult(tournamentId: string, matchId: string, result: GameResult) {
+    await this.db.$transaction(async (tx) => {
+      const tournament = await this.lock(tx, tournamentId, ['ONGOING'], 'Results can only be changed while the tournament is in progress.');
+      const match = await tx.match.findUnique({ where: { id: matchId } });
+      if (!match || match.tournamentId !== tournamentId) throw new NotFoundError('That game is not part of this tournament.');
+      if (match.player2Id === null) throw new BadRequestError('A bye has no result to change.');
+      if (match.status !== 'COMPLETED') throw new ConflictError("This game has no result yet. Enter it instead.");
+      if (match.round !== tournament.currentRound) {
+        throw new ConflictError(
+          `Only round ${tournament.currentRound} results can be changed: the rounds after round ${match.round} were paired from its results.`
+        );
+      }
+      await tx.match.update({ where: { id: matchId }, data: resultFields(match, result) });
       await this.refreshStandings(tx, tournamentId);
     }, TX_OPTIONS);
   }

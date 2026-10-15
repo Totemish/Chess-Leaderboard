@@ -33,7 +33,7 @@ export default function TournamentList() {
         <div>
           <h1 className="text-4xl font-extrabold tracking-tight font-stretch-[118%] sm:text-5xl">Tournaments</h1>
           <p className="mt-3 max-w-prose text-ink-soft">
-            Swiss-system events run by the IITR chess club. Register while an event is open; pairings are published one
+            Swiss-system events run by the IITR chess club. Club admins choose the players; pairings are published one
             round at a time.
           </p>
         </div>
@@ -55,8 +55,8 @@ export default function TournamentList() {
           <EmptyMessage title="No tournaments yet">
             <p>
               {isAdmin
-                ? 'Create the first one with New tournament. Players can register as soon as it exists.'
-                : 'When a club admin opens registration for an event, it appears here.'}
+                ? 'Create the first one with New tournament, then add its players.'
+                : 'When a club admin sets up an event, it appears here.'}
             </p>
           </EmptyMessage>
         ) : (
@@ -164,7 +164,7 @@ function CreateForm({ onCancel }: { onCancel: () => void }) {
           ))}
         </div>
       </fieldset>
-      <p className="mt-4 text-sm text-ink-faint">Registration opens as soon as the tournament is created.</p>
+      <p className="mt-4 text-sm text-ink-faint">You add the players on the tournament page, until round 1 is paired.</p>
       {error && (
         <p id="create-error" role="alert" className="mt-2 text-sm text-loss">
           {error}

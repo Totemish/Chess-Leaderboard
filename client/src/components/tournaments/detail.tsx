@@ -4,21 +4,20 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import useSWR, { mutate as globalMutate } from 'swr';
-import { signIn } from 'next-auth/react';
 import { Check, ChevronLeft } from 'lucide-react';
-import { ApiError, describeError, fetchJson, sendJson } from '@/lib/api';
-import { boardOrder, isBye, roundsOf, statusText } from '@/lib/tournament';
-import { formatLabel, isRatingFormat } from '@/lib/chess';
+import { API_URL, ApiError, describeError, fetchJson, sendJson } from '@/lib/api';
+import { boardOrder, isBye, roundsOf, scoresBeforeRound, statusText } from '@/lib/tournament';
+import { formatLabel, getRating, isRatingFormat, playerName } from '@/lib/chess';
 import { cn } from '@/lib/utils';
 import { useMe } from '@/hooks/use-me';
 import { buttonStyles } from '@/components/ui/button';
 import { EmptyMessage, ErrorMessage } from '@/components/ui/messages';
 import Pairings from './pairings';
 import Crosstable from './crosstable';
-import type { ApiResponse, TournamentDetails } from '@/types';
+import type { ApiResponse, ChessProfile, Participant, RatingFormat, TournamentDetails } from '@/types';
 
 export default function TournamentDetail({ id }: { id: string }) {
-  const { me, isAdmin, signedIn } = useMe();
+  const { me, isAdmin } = useMe();
   const { data, error, mutate } = useSWR<ApiResponse<TournamentDetails>>(
     `/api/backend/tournaments/${encodeURIComponent(id)}`,
     fetchJson
@@ -56,7 +55,6 @@ export default function TournamentDetail({ id }: { id: string }) {
   const latest = rounds[rounds.length - 1] ?? 0;
   const shownRound = selectedRound ?? latest;
   const seedOf = new Map(t.participants.map((p) => [p.profileId, p.seedRating]));
-  const scoreOf = new Map(t.participants.map((p) => [p.profileId, p.score]));
   const shownMatches = boardOrder(
     t.matches.filter((m) => m.round === shownRound),
     t.matches,
@@ -66,6 +64,9 @@ export default function TournamentDetail({ id }: { id: string }) {
   const myProfileId = me?.chessProfileId ?? null;
   const joined = !!myProfileId && t.participants.some((p) => p.profileId === myProfileId);
   const players = t.participants.length;
+  // Admins build the field until round 1 is paired; then it's locked.
+  const editingField = isAdmin && t.status === 'PENDING';
+  const format: RatingFormat = isRatingFormat(t.format) ? t.format : 'rapid';
 
   const pairingsSection = (
     <section key="pairings" aria-labelledby="pairings-heading">
@@ -77,15 +78,16 @@ export default function TournamentDetail({ id }: { id: string }) {
       </div>
       {rounds.length === 0 ? (
         <EmptyMessage title="Round 1 hasn't been paired yet">
-          <p>Pairings appear here once registration closes and an admin pairs the first round.</p>
+          <p>Pairings appear here once an admin pairs round 1.</p>
         </EmptyMessage>
       ) : (
         <Pairings
           tournamentId={t.id}
           matches={shownMatches}
-          scoreOf={scoreOf}
+          scoreBefore={scoresBeforeRound(t.matches, shownRound)}
           myProfileId={myProfileId}
           canRecord={isAdmin}
+          canChange={t.status === 'ONGOING' && shownRound === latest}
           onRecorded={() => mutate()}
         />
       )}
@@ -97,12 +99,35 @@ export default function TournamentDetail({ id }: { id: string }) {
       <h2 id="standings-heading" className="mb-4 text-xl font-bold">
         {rounds.length > 0 ? (t.status === 'COMPLETED' ? 'Final standings' : 'Standings') : 'Registered players'}
       </h2>
+      {editingField && (
+        <AddPlayerControl
+          tournamentId={t.id}
+          format={format}
+          registered={new Set(t.participants.map((p) => p.profileId))}
+          onAdded={() => mutate()}
+        />
+      )}
       {players === 0 ? (
-        <EmptyMessage title="No one has registered yet">
-          <p>Players with a linked Chess.com account can join while registration is open.</p>
+        <EmptyMessage title="No players yet">
+          <p>
+            {editingField
+              ? 'Add players from the list above. You can change the list until round 1 is paired.'
+              : 'A club admin adds the players before round 1 is paired.'}
+          </p>
         </EmptyMessage>
       ) : (
-        <Crosstable participants={t.participants} matches={t.matches} myProfileId={myProfileId} />
+        <Crosstable
+          participants={t.participants}
+          matches={t.matches}
+          myProfileId={myProfileId}
+          renderAction={
+            editingField
+              ? (participant) => (
+                  <RemovePlayerButton tournamentId={t.id} participant={participant} onRemoved={() => mutate()} />
+                )
+              : undefined
+          }
+        />
       )}
     </section>
   );
@@ -132,14 +157,11 @@ export default function TournamentDetail({ id }: { id: string }) {
         </div>
 
         <div className="flex flex-col items-start gap-3 sm:items-end">
-          {t.status === 'PENDING' && (
-            <JoinControl
-              tournamentId={t.id}
-              signedIn={signedIn}
-              linked={!!myProfileId}
-              joined={joined}
-              onJoined={() => mutate()}
-            />
+          {t.status === 'PENDING' && joined && (
+            <p className="inline-flex items-center gap-2 font-semibold text-ink">
+              <Check aria-hidden="true" className="size-4 text-gain" />
+              You&apos;re registered
+            </p>
           )}
           {isAdmin && t.status !== 'COMPLETED' && (
             <PairRoundControl
@@ -320,51 +342,43 @@ function RoundPicker({
   );
 }
 
-function JoinControl({
+/** "Name (username), rating", or just "username, rating" when the two match. */
+function playerOption(profile: ChessProfile, format: RatingFormat): string {
+  const name = playerName(profile);
+  const who = name.toLowerCase() === profile.username.toLowerCase() ? profile.username : `${name} (${profile.username})`;
+  return `${who}, ${getRating(profile, format) ?? 'unrated'}`;
+}
+
+/** Admins pick the field from everyone on the leaderboard, one player at a time. */
+function AddPlayerControl({
   tournamentId,
-  signedIn,
-  linked,
-  joined,
-  onJoined,
+  format,
+  registered,
+  onAdded,
 }: {
   tournamentId: string;
-  signedIn: boolean;
-  linked: boolean;
-  joined: boolean;
-  onJoined: () => Promise<unknown>;
+  format: RatingFormat;
+  registered: Set<string>;
+  onAdded: () => Promise<unknown>;
 }) {
+  const { data, error: loadError } = useSWR<ApiResponse<ChessProfile[]>>(`${API_URL}/api/players`, fetchJson);
+  const [selected, setSelected] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (joined) {
-    return (
-      <p className="inline-flex items-center gap-2 font-semibold text-ink">
-        <Check aria-hidden="true" className="size-4 text-gain" />
-        You&apos;re registered
-      </p>
-    );
-  }
-  if (!signedIn) {
-    return (
-      <button type="button" onClick={() => signIn()} className={buttonStyles({ variant: 'secondary' })}>
-        Sign in to join
-      </button>
-    );
-  }
-  if (!linked) {
-    return (
-      <Link href="/dashboard" className={buttonStyles({ variant: 'secondary' })}>
-        Link Chess.com to join
-      </Link>
-    );
-  }
+  const available = (data?.data ?? [])
+    .filter((p) => !registered.has(p.id))
+    .sort((a, b) => playerName(a).localeCompare(playerName(b)));
 
-  async function join() {
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selected) return;
     setPending(true);
     setError(null);
     try {
-      await sendJson(`/api/backend/tournaments/${tournamentId}/join`, 'POST');
-      await onJoined();
+      await sendJson(`/api/backend/tournaments/${tournamentId}/players`, 'POST', { username: selected });
+      setSelected('');
+      await onAdded();
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -372,17 +386,83 @@ function JoinControl({
     }
   }
 
+  const placeholder = !data ? 'Loading players…' : available.length === 0 ? 'Everyone on the leaderboard is in' : 'Choose a player';
+
   return (
-    <div className="flex flex-col items-start gap-2 sm:items-end">
-      <button type="button" onClick={join} disabled={pending} className={buttonStyles()}>
-        {pending ? 'Joining…' : 'Join tournament'}
-      </button>
-      {error && (
-        <p role="alert" className="text-sm text-loss">
-          {error}
+    <form onSubmit={add} className="mb-4 rounded-lg border border-line bg-surface p-4">
+      <label htmlFor="add-player" className="text-sm font-semibold">
+        Add a player from the leaderboard
+      </label>
+      <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
+        <select
+          id="add-player"
+          value={selected}
+          onChange={(e) => setSelected(e.target.value)}
+          disabled={!data || pending || available.length === 0}
+          className="h-10 min-w-0 flex-1 rounded-md border border-line-strong bg-surface px-3 text-sm text-ink disabled:opacity-60"
+        >
+          <option value="">{placeholder}</option>
+          {available.map((p) => (
+            <option key={p.id} value={p.username}>
+              {playerOption(p, format)}
+            </option>
+          ))}
+        </select>
+        <button type="submit" disabled={!selected || pending} className={buttonStyles()}>
+          {pending ? 'Adding…' : 'Add player'}
+        </button>
+      </div>
+      {(error || loadError) && (
+        <p role="alert" className="mt-2 text-sm text-loss">
+          {error ?? describeError(loadError)}
         </p>
       )}
-    </div>
+    </form>
+  );
+}
+
+function RemovePlayerButton({
+  tournamentId,
+  participant,
+  onRemoved,
+}: {
+  tournamentId: string;
+  participant: Participant;
+  onRemoved: () => Promise<unknown>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const name = playerName(participant.profile);
+
+  async function remove() {
+    setPending(true);
+    setError(null);
+    try {
+      await sendJson(`/api/backend/tournaments/${tournamentId}/players/${encodeURIComponent(participant.profileId)}`, 'DELETE');
+      await onRemoved();
+    } catch (err) {
+      setError(describeError(err));
+      setPending(false);
+    }
+  }
+
+  return (
+    <span className="inline-flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={remove}
+        disabled={pending}
+        aria-label={`Remove ${name}`}
+        className={buttonStyles({ variant: 'quiet', size: 'sm' })}
+      >
+        {pending ? 'Removing…' : 'Remove'}
+      </button>
+      {error && (
+        <span role="alert" className="text-xs whitespace-normal text-loss">
+          {error}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -406,10 +486,13 @@ function PairRoundControl({
   // The API enforces these too; checking here explains why the button is disabled.
   const blocker =
     players < 2
-      ? 'At least 2 players must register before round 1 can be paired.'
+      ? 'Add at least 2 players before pairing round 1.'
       : unfinished > 0
         ? `Enter the ${unfinished === 1 ? 'last result' : `remaining ${unfinished} results`} of round ${nextRound - 1} first.`
         : null;
+  // Pairing round by round can't always finish a near all-play-all cleanly: in
+  // simulations, problems only appeared past players − 2 rounds.
+  const crowded = nextRound > 1 && nextRound > players - 2;
 
   async function pair() {
     setPending(true);
@@ -431,8 +514,10 @@ function PairRoundControl({
         <>
           <p className="text-sm text-ink-soft">
             {nextRound === 1
-              ? 'Pair round 1? Registration closes and no one else can join.'
+              ? 'Pair round 1? The player list locks once it’s paired.'
               : `Pair round ${nextRound} from the current standings?`}
+            {crowded &&
+              ` With ${players} players, a rematch or a repeated colour may be unavoidable from this round on.`}
           </p>
           <div className="flex gap-2">
             <button type="button" onClick={pair} disabled={pending} className={buttonStyles()}>
